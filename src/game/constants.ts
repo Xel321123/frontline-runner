@@ -40,9 +40,13 @@ export const SUPPLY_START = 60;
 export const SUPPLY_CAP = 400;
 
 // --- bases ------------------------------------------------------------------
-export const PLAYER_BASE_HP = 2200;
-export const ENEMY_BASE_HP_BASE = 1800;
-export const ENEMY_BASE_HP_PER_TIER = 220;
+/**
+ * Your strongpoint, and the enemy's. Both are kept deliberately small: a
+ * sustained push should *finish* a battle, not chip at a wall for three minutes.
+ */
+export const PLAYER_BASE_HP = 1800;
+export const ENEMY_BASE_HP_BASE = 1100;
+export const ENEMY_BASE_HP_PER_TIER = 150;
 
 // --- enemy AI ---------------------------------------------------------------
 export const ENEMY_SUPPLY_BASE = 1.7;
@@ -55,7 +59,13 @@ export const ENEMY_ARMOUR_DELAY = 30;
 
 // --- match rules ------------------------------------------------------------
 export const MAX_UNITS_PER_SIDE = 24;
-export const MATCH_TIME_LIMIT = 180;
+/**
+ * The battle clock. It breaks a genuine stalemate (higher remaining base-health
+ * fraction wins, a draw counts as a defeat so the attacker must take ground) —
+ * but it sits comfortably past a well-played push, so it is not the normal way
+ * a battle ends.
+ */
+export const MATCH_TIME_LIMIT = 165;
 /** Minimum gap between the player's own deployments (stops click spamming). */
 export const PLAYER_DEPLOY_COOLDOWN = 0.35;
 /** Enemy hit points grow with the campaign tier. */

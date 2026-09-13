@@ -348,8 +348,12 @@ export function resultHtml(
   nextStage?: StageDefinition,
 ): string {
   const won = outcome.status === 'victory';
+  // Never claim a strongpoint was destroyed when it was the clock that decided
+  // the sector — the remaining-strength figures below tell the real story.
   const title = won
-    ? 'Strongpoint destroyed'
+    ? outcome.lossReason === 'time-expired'
+      ? 'Sector secured'
+      : 'Strongpoint destroyed'
     : outcome.lossReason === 'time-expired'
       ? 'Time expired'
       : 'Base overrun';

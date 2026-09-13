@@ -261,7 +261,7 @@ export const BASE_START_SUPPLIES = 60;
 export const SUPPLIES_PER_ARMOUR_LEVEL = 30;
 export const DAMAGE_PER_FIREPOWER_LEVEL = 0.15;
 export const FIRE_RATE_PER_MOBILITY_LEVEL = 0.06;
-export const BASE_HP_PER_MEDKIT_LEVEL = 200;
+export const BASE_HP_PER_MEDKIT_LEVEL = 250;
 
 /**
  * Upgrade tracks sold at camp. The ids are persisted, so they are stable;
