@@ -1,12 +1,11 @@
 /**
  * Screen markup builders.
  *
- * Every screen is a pure function of the save file + campaign data: HTML in,
+ * Every screen is a pure function of the save file plus campaign data: HTML in,
  * string out. The shell owns state and events; this module owns presentation,
  * which keeps the flows easy to read and impossible to desync from the data.
  */
 
-import { ASSET_MANIFEST } from '../core/assets';
 import {
   FACTIONS,
   FACTION_INFO,
@@ -22,18 +21,36 @@ import {
   campaignMap,
   campaignProgress,
   campaignTotals,
-  nextObjective as progressionNextObjective,
   upgradeCost,
   upgradeEffectLabel,
 } from '../core/progression';
-import type { RunOutcome } from './Play';
+import { THEATERS } from '../data/campaignData';
+import { UNIT_ORDER, UNIT_STATS } from '../game/units';
+import type { BattleOutcome } from './Match';
 import { escapeHtml, fine, formatNumber } from './dom';
 
-/** Map art, resolved through `import.meta.env.BASE_URL` so native builds work. */
-const MAP_URL = `${import.meta.env.BASE_URL}${ASSET_MANIFEST.find((a) => a.key === 'map.europe')?.layers[0]?.url ?? ''}`;
+/**
+ * Campaign-map art, resolved through `import.meta.env.BASE_URL` so subpath and
+ * native builds both work. This is the only image the app loads at all — the
+ * battlefield itself is drawn from paths.
+ */
+const MAP_URL = `${import.meta.env.BASE_URL}assets/maps/europe_blank_laea.svg`;
 
 function factionName(faction: Faction): string {
   return FACTION_INFO.find((info) => info.id === faction)?.name ?? faction;
+}
+
+function unitNote(kind: (typeof UNIT_ORDER)[number]): string {
+  switch (kind) {
+    case 'rifleman':
+      return 'long engagement range, bolt-action fire';
+    case 'smg':
+      return 'fast advance, high fire rate in close quarters';
+    case 'mg':
+      return 'digs in behind sandbags, suppresses what it hits';
+    case 'tank':
+      return 'slow and heavily armoured, area-effect cannon';
+  }
 }
 
 // --------------------------------------------------------------------- title
@@ -52,8 +69,8 @@ export function titleScreenHtml(save: SaveData): string {
         <span class="card-body">${escapeHtml(info?.blurb ?? '')}</span>
         <span class="card-stats">
           <span>${totals.cleared}/30 cleared</span>
-          <span>${totals.deployments} deployments</span>
-          <span>${formatNumber(totals.casualties)} casualties</span>
+          <span>${totals.deployments} battles</span>
+          <span>${formatNumber(totals.casualties)} units lost</span>
         </span>
       </button>`;
   }).join('');
@@ -62,8 +79,10 @@ export function titleScreenHtml(save: SaveData): string {
     <section class="screen screen--title">
       <div class="screen-head">
         <h2>The 1940-45 front</h2>
-        <p class="lede">Pick a side to open its campaign map. Everything runs from
-        the local save file — the game never calls the network.</p>
+        <p class="lede">Pick a side to open its campaign map. Battles are won by
+        breaking the enemy strongpoint with waves of infantry and armour — every
+        unit is drawn from scratch, and the whole game runs from the local save
+        file with no network calls.</p>
       </div>
       <div class="cards">${cards}</div>
       <div class="screen-actions">
@@ -89,7 +108,7 @@ export function titleScreenHtml(save: SaveData): string {
 function statusLabel(state: CampaignNodeState): string {
   switch (state.status) {
     case 'cleared':
-      return `cleared · best ${state.bestTroops} troops`;
+      return `cleared · best ${state.bestKills} enemy units destroyed`;
     case 'contested':
       return `contested · ${state.losses} failed attempt${state.losses === 1 ? '' : 's'}`;
     case 'current':
@@ -119,8 +138,6 @@ export function mapScreenHtml(save: SaveData): string {
   const nodes = campaignMap(faction, save.unlockedStages, save.records);
   const totals = campaignTotals(faction, save.records);
   const progress = campaignProgress(faction, save.unlockedStages);
-  // The live objective is the first *uncleared* unlocked node, not the first
-  // unlocked one — otherwise a cleared sector would be offered again.
   const objective = nextObjective(faction, save);
 
   const legend = (
@@ -140,7 +157,7 @@ export function mapScreenHtml(save: SaveData): string {
         <div class="map-stats">
           <span class="stat"><b>${totals.cleared}</b>/${progress.total} sectors cleared</span>
           <span class="stat"><b>${totals.contested}</b> contested</span>
-          <span class="stat"><b>${formatNumber(totals.casualties)}</b> casualties</span>
+          <span class="stat"><b>${formatNumber(totals.casualties)}</b> units lost</span>
           <span class="stat"><b>${formatNumber(save.warBonds)}</b> war bonds</span>
         </div>
         <div class="legend">${legend}</div>
@@ -174,16 +191,16 @@ export function briefingHtml(stage: StageDefinition, save: SaveData): string {
   const rows: (readonly [string, string])[] = [
     ['theatre', `${stage.theater} · ${stage.year}`],
     ['grid', `x ${stage.coords.x}% · y ${stage.coords.y}%`],
-    ['strongpoint', `${stage.bossName} · ${formatNumber(stage.bossHp)} hp`],
-    ['enemy tier', `${stage.tier} · ${stage.faction === 'allied' ? 'Axis' : 'Allied'} uniforms`],
+    ['strongpoint', stage.bossName],
+    ['enemy tier', `${stage.tier} of 9 · ${stage.faction === 'allied' ? 'Axis' : 'Allied'} forces`],
     ['reward', `${stage.rewardBonds} war bonds`],
     ['status', cleared ? 'cleared' : locked ? 'locked' : 'open'],
   ];
   if (record) {
     rows.push([
       'record',
-      `${record.wins}W / ${record.losses}L · ${formatNumber(record.casualties)} casualties${
-        record.bestTroops > 0 ? ` · best ${record.bestTroops} troops` : ''
+      `${record.wins}W / ${record.losses}L · ${formatNumber(record.casualties)} units lost${
+        record.bestKills > 0 ? ` · best ${record.bestKills} destroyed` : ''
       }`,
     ]);
   }
@@ -202,6 +219,9 @@ export function briefingHtml(stage: StageDefinition, save: SaveData): string {
         )
         .join('')}
     </dl>
+    <p class="fine">Command your line from the deployment bar: supplies arrive
+    continuously (2/s, faster with logistics upgrades), and bonds dropped by
+    destroyed enemy units buy those upgrades mid-battle.</p>
     ${
       locked
         ? fine('This sector is not open yet — clear the preceding node first.')
@@ -221,12 +241,15 @@ export function briefingHtml(stage: StageDefinition, save: SaveData): string {
 export interface CampView {
   readonly faction: Faction;
   readonly stageIndex: number;
-  readonly weaponName: string;
-  readonly weaponDetail: string;
-  readonly squadSize: number;
-  readonly damagePerTroop: number;
-  readonly roundsPerSecond: number;
-  readonly revives: number;
+  readonly objective: string;
+  readonly tier: number;
+  /** The army's current standard rifle, from the campaign weapon table. */
+  readonly standardRifle: string;
+  readonly standardRifleDetail: string;
+  readonly startSupplies: number;
+  readonly baseHp: number;
+  readonly damageMultiplier: number;
+  readonly fireRateMultiplier: number;
 }
 
 export function campHtml(save: SaveData, view: CampView): string {
@@ -261,32 +284,54 @@ export function campHtml(save: SaveData, view: CampView): string {
       </li>`;
   }).join('');
 
+  const roster = UNIT_ORDER.map((kind) => {
+    const stats = UNIT_STATS[kind];
+    const damage = stats.damage * view.damageMultiplier;
+    const rate = stats.fireRate * view.fireRateMultiplier;
+    return `
+      <li class="unit-card">
+        <div class="unit-card-head">
+          <b>${escapeHtml(stats.name)}</b>
+          <span class="cost">${stats.cost} supplies</span>
+        </div>
+        <p class="unit-card-note">${escapeHtml(unitNote(kind))}</p>
+        <p class="mono unit-card-stats">${stats.hp} hp · ${Math.round(damage)} dmg · ${rate.toFixed(
+          2,
+        )}/s · ${stats.range}px range${
+          stats.blast ? ` · ${stats.blast}px blast` : ''
+        }${stats.armor ? ` · ${stats.armor} armour` : ''}</p>
+      </li>`;
+  }).join('');
+
   return `
     <div class="modal-head">
       <span class="modal-kicker">${escapeHtml(factionName(view.faction))} · camp</span>
       <h2>Armoury &amp; replacements</h2>
-      <p class="lede">War bonds: <b>${formatNumber(save.warBonds)}</b></p>
+      <p class="lede">War bonds: <b>${formatNumber(save.warBonds)}</b> · next objective
+      <b>${escapeHtml(view.objective)}</b> (tier ${view.tier})</p>
     </div>
     <div class="camp-grid">
       <section class="camp-block">
-        <h3>Active weapon</h3>
+        <h3>Your battle line</h3>
         <div class="weapon-card">
-          <b>${escapeHtml(view.weaponName)}</b>
-          <p class="mono">${escapeHtml(view.weaponDetail)}</p>
+          <b>Standard rifle: ${escapeHtml(view.standardRifle)}</b>
+          <p class="mono">${escapeHtml(view.standardRifleDetail)}</p>
         </div>
         <ul class="loadout">
-          <li><span>squad at deployment</span><b>${view.squadSize} troops</b></li>
-          <li><span>damage per trooper</span><b>${view.damagePerTroop.toFixed(1)}</b></li>
-          <li><span>rounds per second</span><b>${view.roundsPerSecond.toFixed(2)}</b></li>
-          <li><span>revives per run</span><b>${view.revives}</b></li>
+          <li><span>supplies at deploy</span><b>${formatNumber(view.startSupplies)}</b></li>
+          <li><span>base hit points</span><b>${formatNumber(view.baseHp)}</b></li>
+          <li><span>unit damage</span><b>×${view.damageMultiplier.toFixed(2)}</b></li>
+          <li><span>unit rate of fire</span><b>×${view.fireRateMultiplier.toFixed(2)}</b></li>
         </ul>
-        <p class="fine">Weapons unlock by campaign node (<span class="mono">minLevel</span>);
-        ${escapeHtml(view.weaponName)} is the best one open to this army at node ${view.stageIndex}.</p>
+        <ul class="unit-list">${roster}</ul>
+        <p class="fine">Every figure on the field is drawn procedurally — no sprite
+        sheets, no downloads.</p>
       </section>
       <section class="camp-block">
         <h3>Upgrades</h3>
         <ul class="upgrades">${rows}</ul>
-        <p class="fine">Bonds come from cleared sectors — ${formatNumber(save.warBonds)} banked.</p>
+        <p class="fine">Bonds come from destroyed enemy units and from cleared
+        sectors — ${formatNumber(save.warBonds)} banked.</p>
       </section>
     </div>
     <div class="modal-actions">
@@ -297,34 +342,48 @@ export function campHtml(save: SaveData, view: CampView): string {
 
 // -------------------------------------------------------------------- result
 
-export function resultHtml(outcome: RunOutcome, save: SaveData, nextStage?: StageDefinition): string {
-  const won = outcome.status === 'won';
+export function resultHtml(
+  outcome: BattleOutcome,
+  save: SaveData,
+  nextStage?: StageDefinition,
+): string {
+  const won = outcome.status === 'victory';
   const title = won
-    ? 'Sector cleared'
+    ? 'Strongpoint destroyed'
     : outcome.lossReason === 'time-expired'
       ? 'Time expired'
-      : 'Squad wiped';
+      : 'Base overrun';
 
-  const unlocked = outcome.unlockedStage
-    ? (nextStage ?? null)
-    : null;
+  const unlocked = outcome.unlockedStage ? (nextStage ?? null) : null;
+  const minutes = Math.floor(outcome.durationSeconds / 60);
+  const seconds = Math.floor(outcome.durationSeconds % 60);
 
   return `
     <div class="modal-head modal-head--${won ? 'win' : 'loss'}">
-      <span class="modal-kicker">${escapeHtml(outcome.nodeName)} · ${escapeHtml(outcome.year)}</span>
+      <span class="modal-kicker">${escapeHtml(outcome.nodeName)} · ${escapeHtml(
+        outcome.year,
+      )} · ${minutes}m ${String(seconds).padStart(2, '0')}s</span>
       <h2>${title}</h2>
     </div>
     <div class="result-grid">
-      <div class="result-stat"><span>war bonds earned</span><b class="${won ? 'pos' : ''}">${
-        won ? `+${formatNumber(outcome.bondsAwarded)}` : '0'
-      }</b></div>
-      <div class="result-stat"><span>troops remaining</span><b>${outcome.troopsRemaining}</b></div>
-      <div class="result-stat"><span>casualties</span><b class="neg">${formatNumber(
-        outcome.casualties,
+      <div class="result-stat"><span>war bonds awarded</span><b class="${
+        won ? 'pos' : ''
+      }">${won ? `+${formatNumber(outcome.bondsAwarded)}` : '0'}</b></div>
+      <div class="result-stat"><span>bonds from the field</span><b class="pos">+${formatNumber(
+        outcome.bondsCollected,
       )}</b></div>
-      <div class="result-stat"><span>infantry killed</span><b>${outcome.kills}</b></div>
-      <div class="result-stat"><span>crates collected</span><b>${outcome.cratesCollected}</b></div>
-      <div class="result-stat"><span>troops raised</span><b>${outcome.troopsGained}</b></div>
+      <div class="result-stat"><span>units deployed</span><b>${outcome.unitsDeployed}</b></div>
+      <div class="result-stat"><span>units lost</span><b class="neg">${formatNumber(
+        outcome.unitsLost,
+      )}</b></div>
+      <div class="result-stat"><span>enemy destroyed</span><b>${outcome.enemyDestroyed}</b></div>
+      <div class="result-stat"><span>logistics upgrades</span><b>${outcome.logisticsBought}</b></div>
+      <div class="result-stat"><span>your base</span><b>${formatNumber(
+        outcome.playerBaseRemaining,
+      )}/${formatNumber(outcome.playerBaseMax)}</b></div>
+      <div class="result-stat"><span>enemy strongpoint</span><b>${formatNumber(
+        outcome.enemyBaseRemaining,
+      )}/${formatNumber(outcome.enemyBaseMax)}</b></div>
     </div>
     ${
       unlocked
@@ -334,7 +393,7 @@ export function resultHtml(outcome: RunOutcome, save: SaveData, nextStage?: Stag
         : fine(
             won
               ? 'That was the last node in this campaign.'
-              : 'No new ground taken — the node stays open for another attempt.',
+              : 'The sector stays open, and the bonds you collected are banked — spend them at camp and try again.',
           )
     }
     <div class="modal-actions">
@@ -355,29 +414,23 @@ export function resultHtml(outcome: RunOutcome, save: SaveData, nextStage?: Stag
 export interface DiagnosticsView {
   readonly backendId: string;
   readonly persistent: boolean;
-  readonly assetSummary: string;
-  readonly assetFailures: readonly string[];
   readonly theatreCount: number;
+  readonly unitKinds: number;
   readonly note?: string;
 }
-export function diagnosticsHtml(view: DiagnosticsView): string {
-  const failureRows = view.assetFailures.length
-    ? `<ul class="failures">${view.assetFailures
-        .map((line) => `<li>${escapeHtml(line)}</li>`)
-        .join('')}</ul>`
-    : '<p class="fine">no sprite fell back to its procedural stand-in</p>';
 
+export function diagnosticsHtml(view: DiagnosticsView): string {
   return `
     <h3>Diagnostics</h3>
     <ul class="diag-rows">
       <li><span>save backend</span><b>${escapeHtml(view.backendId)}${
         view.persistent ? '' : ' (in-memory only!)'
       }</b></li>
-      <li><span>sprites</span><b>${escapeHtml(view.assetSummary)}</b></li>
+      <li><span>unit archetypes</span><b>${view.unitKinds}</b></li>
       <li><span>theatres in database</span><b>${view.theatreCount}</b></li>
+      <li><span>sprites or images loaded by the battlefield</span><b>0</b></li>
       <li><span>network calls needed to play</span><b>0</b></li>
     </ul>
-    ${failureRows}
     <div class="screen-actions">
       <button type="button" class="btn btn--small" data-action="play-sound" data-sound="shot">shot</button>
       <button type="button" class="btn btn--small" data-action="play-sound" data-sound="hit">hit</button>
@@ -392,5 +445,9 @@ export function diagnosticsHtml(view: DiagnosticsView): string {
 
 /** Shared by the map and the title screen: which sector is next in line. */
 export function nextObjective(faction: Faction, save: SaveData): StageDefinition | undefined {
-  return progressionNextObjective(faction, save.unlockedStages, save.records);
+  return campaignMap(faction, save.unlockedStages, save.records).find(
+    (state) => state.deployable,
+  )?.stage;
 }
+
+export { THEATERS };

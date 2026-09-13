@@ -20,11 +20,9 @@ register(new URL('./ts-resolve-hooks.mjs', import.meta.url));
 
 const dataUrl = new URL('../src/data/campaignData.ts', import.meta.url);
 const progressionUrl = new URL('../src/core/progression.ts', import.meta.url);
-const assetsUrl = new URL('../src/core/assets.ts', import.meta.url);
 
 const data = await import(dataUrl.href);
 const progression = await import(progressionUrl.href);
-const assets = await import(assetsUrl.href);
 
 const failures = [];
 const notes = [];
@@ -196,8 +194,8 @@ for (const faction of ['allied', 'axis']) {
   const tiers = stages.map((stage) => stage.tier);
   for (const tier of tiers) {
     check(
-      assets.UNIT_TIERS.includes(tier),
-      `${faction}: tier ${tier} is not one of the shipped character tiers (${assets.UNIT_TIERS.join(', ')})`,
+      progression.TIER_LADDER.includes(tier),
+      `${faction}: tier ${tier} is outside the difficulty ladder (${progression.TIER_LADDER.join(', ')})`,
     );
   }
   const bonds = stages.map((stage) => stage.rewardBonds);

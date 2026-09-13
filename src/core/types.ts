@@ -50,10 +50,10 @@ export type UpgradeLevels = Record<UpgradeId, number>;
 export interface StageRecord {
   readonly wins: number;
   readonly losses: number;
-  /** Troops lost across every attempt at this node. */
+  /** Units lost across every attempt at this node. */
   readonly casualties: number;
-  /** Best troops remaining on a win (0 until the node is cleared). */
-  readonly bestTroops: number;
+  /** Most enemy units destroyed in a single attempt (0 until one is won). */
+  readonly bestKills: number;
 }
 
 export type StageRecords = Record<StageId, StageRecord>;
@@ -62,7 +62,7 @@ export const EMPTY_STAGE_RECORD: StageRecord = {
   wins: 0,
   losses: 0,
   casualties: 0,
-  bestTroops: 0,
+  bestKills: 0,
 };
 
 export function isStageRecord(value: unknown): value is Partial<StageRecord> {

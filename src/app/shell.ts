@@ -1,22 +1,24 @@
 /**
- * Shell — screens, navigation and the run lifecycle.
+ * Shell — screens, navigation and the battle lifecycle.
  *
- * One state machine over three screens (title, campaign map, play) plus modal
+ * One state machine over three screens (title, campaign map, battle) plus modal
  * layers (briefing, camp, result). All navigation is a single delegated click
  * listener reading `data-action` attributes, so adding a button never adds a
  * listener and nothing can leak between screens.
  *
  * Nothing here talks to the network: the save file is the only state, and the
- * play scene reads its data straight out of it.
+ * battle reads its configuration straight out of it.
  */
 
-import { getStage, type StageDefinition } from '../core/progression';
+import { bestWeaponFor } from '../data/campaignData';
+import { getStage, stagesForFaction, type StageDefinition } from '../core/progression';
 import { THEATERS } from '../data/campaignData';
 import { isFaction, isUpgradeId } from '../core/types';
 import type { Faction } from '../core/types';
-import type { AssetLoadReport, GameStorage, SoundName } from '../engine';
-import { createAssetLoader, createGameStorage, SoundManager } from '../engine';
-import { createLoadout } from '../game/loadout';
+import type { GameStorage, SoundName } from '../engine';
+import { createGameStorage, SoundManager } from '../engine';
+import { createMatchConfig } from '../game/match';
+import { UNIT_ORDER } from '../game/units';
 import type { CanvasSurface, OrientationLockResult } from '../platform/Display';
 import {
   createCanvasSurface,
@@ -24,7 +26,7 @@ import {
   requestFullscreen,
   tryLockLandscape,
 } from '../platform/Display';
-import { PlaySession, type RunOutcome } from './Play';
+import { MatchSession, type BattleOutcome } from './Match';
 import { mustFind, setHtml, show } from './dom';
 import {
   briefingHtml,
@@ -53,12 +55,12 @@ const SHELL_HTML = `
       <p class="sub" id="bar-sub">loading</p>
     </div>
     <div class="bar-actions">
-      <span class="bond-badge" title="War bonds are earned by clearing sectors">
+      <span class="bond-badge" title="War bonds are earned by clearing sectors and by destroying enemy units">
         ★ <b id="bond-count">0</b>
       </span>
       <button type="button" class="chip" id="btn-sound" data-action="toggle-sound">sound</button>
       <button type="button" class="chip" id="btn-camp" data-action="open-camp">camp</button>
-      <button type="button" class="chip" id="btn-exit" data-action="exit-run" hidden>abort run</button>
+      <button type="button" class="chip" id="btn-exit" data-action="exit-run" hidden>abort battle</button>
     </div>
   </header>
   <main>
@@ -66,8 +68,9 @@ const SHELL_HTML = `
     <div id="diagnostics" hidden></div>
     <div id="play" hidden>
       <div class="stage-wrap" id="stage"></div>
-      <p class="play-hint">drag / <span class="mono">W S ↑ ↓</span> to steer ·
-        <span class="mono">R</span> redeploy · <span class="mono">ESC</span> back to base</p>
+      <p class="play-hint"><span class="mono">1-4</span> deploy ·
+        <span class="mono">U</span> boost logistics · <span class="mono">P</span> pause ·
+        <span class="mono">ESC</span> back to base — or click the deployment bar</p>
     </div>
     <div id="modal-layer" hidden><div class="modal" id="modal"></div></div>
   </main>
@@ -81,7 +84,6 @@ export async function startShell(root: HTMLElement): Promise<void> {
   const sound: SoundManager = new SoundManager({
     muted: storage.snapshot().settings.muted,
   });
-  const loader = createAssetLoader({ baseUrl: import.meta.env.BASE_URL });
 
   setHtml(root, SHELL_HTML);
   const screenEl = mustFind<HTMLElement>(root, '#screen');
@@ -97,48 +99,53 @@ export async function startShell(root: HTMLElement): Promise<void> {
   const exitEl = mustFind<HTMLElement>(root, '#btn-exit');
 
   let modal: ModalState = { kind: null };
-  let session: PlaySession | null = null;
+  let session: MatchSession | null = null;
   let surface: CanvasSurface | null = null;
-  let lastOutcome: RunOutcome | null = null;
+  let lastOutcome: BattleOutcome | null = null;
   let showingTitle = false;
   let diagnosticsOpen = false;
   let orientationLock: OrientationLockResult | 'idle' = 'idle';
-  let report: AssetLoadReport | null = null;
   let hint = '';
   let saveNote = '';
   /** Console handle for diagnostics and verification. */
-  const debugApi: Record<string, unknown> = { storage, sound, loader };
+  const debugApi: Record<string, unknown> = { storage, sound };
 
   // ------------------------------------------------------------------ render
+
+  function objectiveFor(save = storage.snapshot()): StageDefinition | undefined {
+    const faction: Faction = save.faction ?? 'allied';
+    return nextObjective(faction, save);
+  }
 
   function campView(): CampView {
     const save = storage.snapshot();
     const faction: Faction = save.faction ?? 'allied';
-    const stageIndex = nextObjective(faction, save)?.index ?? 1;
-    const loadout = createLoadout(faction, stageIndex, save.upgrades);
-    const weapon = loadout.weapon;
+    const objective = objectiveFor(save) ?? stagesForFaction(faction)[0];
+    if (!objective) {
+      throw new Error('campaign data is empty');
+    }
+    const config = createMatchConfig(objective, save);
+    const weapon = bestWeaponFor(faction, objective.index);
     return {
       faction,
-      stageIndex,
-      weaponName: weapon.name,
-      weaponDetail: `${weapon.caliber} · ${weapon.year} · ${weapon.damage} dmg · ${weapon.fireRate}/s · ±${weapon.spread}° · ${weapon.magazineSize} rounds · ${weapon.automatic ? 'automatic' : 'single shot'}`,
-      squadSize: loadout.startingTroops,
-      damagePerTroop: loadout.damagePerTroop,
-      roundsPerSecond: 1 / loadout.fireInterval,
-      revives: loadout.revives,
+      stageIndex: objective.index,
+      objective: `${objective.name} (${objective.year})`,
+      tier: objective.tier,
+      standardRifle: weapon.name,
+      standardRifleDetail: `${weapon.caliber} · ${weapon.year} · ${weapon.damage} dmg · ${weapon.fireRate}/s · ±${weapon.spread}° · ${weapon.magazineSize} rounds`,
+      startSupplies: config.startSupplies,
+      baseHp: config.playerBaseHp,
+      damageMultiplier: config.damageMultiplier,
+      fireRateMultiplier: config.fireRateMultiplier,
     };
   }
 
   function diagnosticsView(): DiagnosticsView {
-    const failures = report ? report.failures.map((failure) => `${failure.label}: ${failure.reason}`) : [];
     return {
       backendId: storage.backendId,
       persistent: storage.persistent,
-      assetSummary: report
-        ? `${report.loaded}/${report.total} loaded in ${Math.round(report.durationMs)} ms · ${report.procedural} procedural`
-        : 'loading',
-      assetFailures: failures,
       theatreCount: THEATERS.length,
+      unitKinds: UNIT_ORDER.length,
       note: saveNote,
     };
   }
@@ -185,7 +192,7 @@ export async function startShell(root: HTMLElement): Promise<void> {
     } else if (!save.faction) {
       barSubEl.textContent = 'select a faction to begin';
     } else {
-      const stage = nextObjective(save.faction, save);
+      const stage = objectiveFor(save);
       const side = save.faction === 'allied' ? 'Allied' : 'Axis';
       barSubEl.textContent = stage
         ? `${side} campaign · next ${stage.name} (${stage.year})`
@@ -213,9 +220,9 @@ export async function startShell(root: HTMLElement): Promise<void> {
     hintEl.textContent = message;
   }
 
-  // -------------------------------------------------------------------- play
+  // ------------------------------------------------------------------ battle
 
-  function startRun(stage: StageDefinition | undefined): void {
+  function startBattle(stage: StageDefinition | undefined): void {
     const save = storage.snapshot();
     if (!stage || !save.faction || session) return;
     if (!save.unlockedStages.includes(stage.id)) {
@@ -227,19 +234,17 @@ export async function startShell(root: HTMLElement): Promise<void> {
     modal = { kind: null };
     lastOutcome = null;
     surface = createCanvasSurface(stageEl);
-    session = new PlaySession({
+    session = new MatchSession({
       surface,
-      loader,
       storage,
       sound,
       faction: save.faction,
-      node: stage,
       stage,
-      onExit: () => exitRun(),
+      onExit: () => exitBattle(),
       onFinish: (outcome) => {
         lastOutcome = outcome;
         modal = { kind: 'result' };
-        saveNote = `last run: ${outcome.status} at ${outcome.nodeName}`;
+        saveNote = `last battle: ${outcome.status} at ${outcome.nodeName}`;
         render();
       },
     });
@@ -247,27 +252,25 @@ export async function startShell(root: HTMLElement): Promise<void> {
     debugApi.session = session;
     hint = '';
     render();
-    say('drag or WASD to steer · R redeploy · ESC back to base');
+    say('1-4 or the deployment bar to field units · U boosts logistics · P pauses');
   }
 
-  function exitRun(): void {
+  function teardownSession(): void {
     session?.dispose();
     session = null;
     debugApi.session = null;
     surface?.dispose();
     surface = null;
-    if (lastOutcome) {
-      modal = { kind: 'result' };
-    }
+  }
+
+  function exitBattle(): void {
+    teardownSession();
+    if (lastOutcome) modal = { kind: 'result' };
     render();
   }
 
-  function closeRun(): void {
-    session?.dispose();
-    session = null;
-    debugApi.session = null;
-    surface?.dispose();
-    surface = null;
+  function closeBattle(): void {
+    teardownSession();
     modal = { kind: null };
     render();
   }
@@ -332,21 +335,21 @@ export async function startShell(root: HTMLElement): Promise<void> {
         modal = { kind: 'camp' };
         break;
       case 'close-modal':
-        // Leaving the result panel ends the run behind it.
+        // Leaving the result panel ends the battle behind it.
         if (session) {
-          closeRun();
+          closeBattle();
           return;
         }
         modal = { kind: null };
         break;
       case 'deploy-next':
-        startRun(nextObjective(storage.snapshot().faction ?? 'allied', storage.snapshot()));
+        startBattle(objectiveFor());
         return;
       case 'deploy-stage':
-        startRun(getStage(target.dataset.stage ?? ''));
+        startBattle(getStage(target.dataset.stage ?? ''));
         return;
       case 'exit-run':
-        closeRun();
+        closeBattle();
         return;
       case 'toggle-sound': {
         const muted = sound.toggleMute();
@@ -396,14 +399,14 @@ export async function startShell(root: HTMLElement): Promise<void> {
   }
 
   async function requestLandscape(): Promise<void> {
-    if (!isLandscape()) await requestFullscreen(stageEl.closest('.stage-wrap') ?? stageEl);
+    if (!isLandscape()) await requestFullscreen(stageEl);
     orientationLock = await tryLockLandscape();
   }
 
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && modal.kind) {
       event.preventDefault();
-      if (session) closeRun();
+      if (session) closeBattle();
       else {
         modal = { kind: null };
         render();
@@ -411,12 +414,9 @@ export async function startShell(root: HTMLElement): Promise<void> {
       return;
     }
     if (session) return;
-    if (event.key === 'Enter') {
-      const stage = nextObjective(storage.snapshot().faction ?? 'allied', storage.snapshot());
-      if (storage.snapshot().faction) {
-        event.preventDefault();
-        startRun(stage);
-      }
+    if (event.key === 'Enter' && storage.snapshot().faction) {
+      event.preventDefault();
+      startBattle(objectiveFor());
     }
   });
 
@@ -433,13 +433,8 @@ export async function startShell(root: HTMLElement): Promise<void> {
   // -------------------------------------------------------------------- boot
 
   render();
-  report = await loader.load();
-  const failures = report.failures.length;
-  say(
-    failures === 0
-      ? `${report.loaded}/${report.total} sprites ready · offline`
-      : `${report.loaded}/${report.total} sprites · ${failures} procedural fallback`,
-  );
+  say('battlefield ready — everything is drawn from paths, nothing is downloaded');
+  debugApi.campView = campView;
   (globalThis as unknown as { frontline?: unknown }).frontline = debugApi;
   render();
 }

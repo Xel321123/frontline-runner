@@ -11,20 +11,21 @@ src/data/       pure historical data (campaign nodes, weapon stats).
                 NO DOM, NO window, NO localStorage, NO AudioContext.
 src/core/       pure data + pure functions.
                 NO DOM, NO window, NO localStorage, NO AudioContext.
-src/game/       pure simulation: fixed 1/60 s steps, seeded level layout,
-                entities, loadout maths. Headless-testable in Node
+src/game/       pure battle simulation: fixed 1/60 s steps, unit table, match
+                config, HUD geometry, TugSimulation. Headless-testable in Node
                 (`npm run check:sim`) — NO DOM, NO AudioContext.
                     ▲                    ▲
-src/engine/     subsystems behind interfaces: save file, audio synth, asset
-                loading, procedural sprites, input. Uses Canvas 2D / Web Audio
-                (both available in every WebView) but never DOM layout.
+src/engine/     subsystems behind interfaces: save file, procedural audio
+                synthesis, input. Uses Web Audio but never DOM layout. There is
+                no asset loader any more — the battlefield needs no images.
                     ▲
-src/render/     Canvas 2D drawing only: parallax, sprite compositing, HUD.
+src/render/     Canvas 2D drawing only: parallax terrain, procedural figures,
+                effects, HUD. Reads a state snapshot and never mutates it.
 src/platform/   the ONLY place that touches document / window / screen /
                 localStorage / ResizeObserver.
                     ▲
-src/app/        composition root: `shell.ts` (screens, navigation, run
-                lifecycle) + `screens.ts` (markup) + `Play.ts` (run loop).
+src/app/        composition root: `shell.ts` (screens, navigation, battle
+                lifecycle) + `screens.ts` (markup) + `Match.ts` (battle loop).
 src/main.ts     the only file that knows it is a browser page.
 ```
 

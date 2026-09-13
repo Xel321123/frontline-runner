@@ -1010,7 +1010,31 @@ export const AXIS_CAMPAIGN: readonly CampaignNode[] = [
 // ---------------------------------------------------------------------------
 
 /** Nodes per faction. */
-export const CAMPAIGN_LENGTH = 30;
+export const CAMPAIGN_LENGTH = 30 as const;
+
+/** Weapons a side has unlocked by the time it reaches `stageIndex`. */
+export function weaponsUnlockedAt(faction: Faction, stageIndex: number): readonly WeaponStats[] {
+  return availableWeapons(faction, stageIndex);
+}
+
+/**
+ * The weapon an army carries at a given point in its campaign: the latest one
+ * unlocked, and where several share that node (the final slot pairs an HMG with
+ * a launcher) the one that keeps a squad in sustained fire.
+ */
+export function bestWeaponFor(faction: Faction, stageIndex: number): WeaponStats {
+  const unlocked = availableWeapons(faction, stageIndex);
+  if (unlocked.length === 0) return startingWeapon(faction);
+  const burst = (weapon: WeaponStats): number => weapon.damage * weapon.fireRate;
+  return unlocked.reduce((best, candidate) => {
+    if (candidate.minLevel !== best.minLevel) {
+      return candidate.minLevel > best.minLevel ? candidate : best;
+    }
+    const bestScore = (best.automatic ? 1 : 0) * 1e6 + burst(best);
+    const score = (candidate.automatic ? 1 : 0) * 1e6 + burst(candidate);
+    return score > bestScore ? candidate : best;
+  });
+}
 
 export const CAMPAIGNS: Readonly<Record<Faction, readonly CampaignNode[]>> = {
   allied: ALLIED_CAMPAIGN,

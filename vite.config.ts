@@ -29,7 +29,7 @@ export default defineConfig({
         name: 'Frontline Runner',
         short_name: 'Frontline',
         description:
-          'Offline-first landscape runner. Built with Vite, TypeScript and Canvas 2D.',
+          'Offline-first landscape tug-of-war battlefield. Vite + TypeScript + Canvas 2D, fully procedural units.',
         theme_color: '#0d1210',
         background_color: '#0d1210',
         display: 'standalone',

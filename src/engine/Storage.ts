@@ -87,10 +87,12 @@ function freezeSave(save: SaveData): SaveData {
   });
 }
 
-/** Per-node figures a run reports back to the save file. */
+/** Per-node figures a battle reports back to the save file. */
 export interface RunReport {
+  /** Units the player lost. */
   readonly casualties: number;
-  readonly troopsRemaining: number;
+  /** Enemy units the player destroyed. */
+  readonly kills: number;
 }
 
 export class GameStorage {
@@ -214,11 +216,12 @@ export class GameStorage {
         ? [...current.unlockedStages, next]
         : [...current.unlockedStages];
       const previous = current.records[id] ?? EMPTY_STAGE_RECORD;
+      const kills = Math.max(0, Math.trunc(report?.kills ?? 0));
       const record: StageRecord = Object.freeze({
         wins: previous.wins + 1,
         losses: previous.losses,
         casualties: previous.casualties + Math.max(0, Math.trunc(report?.casualties ?? 0)),
-        bestTroops: Math.max(previous.bestTroops, Math.trunc(report?.troopsRemaining ?? 0)),
+        bestKills: Math.max(previous.bestKills, kills),
       });
       return {
         ...current,
@@ -241,12 +244,16 @@ export class GameStorage {
         wins: previous.wins,
         losses: previous.losses + 1,
         casualties: previous.casualties + Math.max(0, Math.trunc(report?.casualties ?? 0)),
-        bestTroops: previous.bestTroops,
+        bestKills: Math.max(previous.bestKills, Math.max(0, Math.trunc(report?.kills ?? 0))),
       });
       return { ...current, records: { ...current.records, [id]: record } };
     });
   }
 
+  /**
+   * Bank bonds picked up on the field. Kept separate from `completeStage` so a
+   * lost battle still pays for the damage the player did.
+   */
   addWarBonds(amount: number): void {
     const delta = clampBonds(amount);
     if (delta === 0) return;
@@ -383,11 +390,14 @@ export class GameStorage {
     const records: Record<string, StageRecord> = {};
     for (const [id, value] of Object.entries(rawRecords)) {
       if (!isStageId(id) || !isStageRecord(value)) continue;
+      // `bestTroops` is the pre-battlefield field name; read it as a fallback so
+      // saves written by the previous build keep their per-node history.
+      const legacy = (value as { bestTroops?: unknown }).bestTroops;
       records[id] = {
         wins: clampCount(value.wins),
         losses: clampCount(value.losses),
         casualties: clampCount(value.casualties),
-        bestTroops: clampCount(value.bestTroops),
+        bestKills: clampCount(value.bestKills ?? legacy),
       };
     }
 

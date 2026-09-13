@@ -7,7 +7,6 @@
  * the same ids the UI and renderer use.
  */
 import type { StageId, StageRecord, UpgradeId, UpgradeLevels } from './types';
-import { UNIT_TIERS } from './assets';
 import type { CampaignNode } from '../data/campaignData';
 import {
   AXIS_CAMPAIGN,
@@ -19,26 +18,32 @@ import {
   stageIndexOf,
 } from '../data/campaignData';
 
+/**
+ * Difficulty ladder for the battlefields, 1 (opening sectors) to 9 (the final
+ * assaults). The tier drives the enemy's unit mix, its hit points and its
+ * economy, so it has to be comparable across both campaigns.
+ */
+export const TIER_LADDER = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
+export type UnitTier = (typeof TIER_LADDER)[number];
+
 export interface StageDefinition extends CampaignNode {
   readonly faction: 'allied' | 'axis';
   /** 1-based position within the faction's own campaign. */
   readonly index: number;
   readonly region: string;
-  /** Character-pack tier used by the enemies in this stage. */
-  readonly tier: number;
+  /** Difficulty tier of the battlefield: drives the enemy force. */
+  readonly tier: UnitTier;
   /** War bonds awarded on a first clear. */
   readonly rewardBonds: number;
 }
 
-/**
- * Four nodes per character-pack tier, walking the eight tiers the pack ships
- * (it has no `t7`, hence the gap in `UNIT_TIERS`).
- */
-const NODES_PER_TIER = 4;
-
-function tierForIndex(index: number): number {
-  const slot = Math.min(Math.floor(index / NODES_PER_TIER), UNIT_TIERS.length - 1);
-  return UNIT_TIERS[slot] ?? 1;
+/** Spread the thirty nodes of a campaign across the whole difficulty ladder. */
+function tierForIndex(index: number): UnitTier {
+  const slot = Math.min(
+    TIER_LADDER.length - 1,
+    Math.floor((index / CAMPAIGN_LENGTH) * TIER_LADDER.length),
+  );
+  return TIER_LADDER[slot] ?? 1;
 }
 
 /** War bonds rise by 15 per node: 60 at Narvik, 495 at the Halbe Pocket. */
@@ -138,7 +143,7 @@ export interface CampaignNodeState {
   readonly wins: number;
   readonly losses: number;
   readonly casualties: number;
-  readonly bestTroops: number;
+  readonly bestKills: number;
   /** True while this is the node the next deployment would fight. */
   readonly deployable: boolean;
 }
@@ -181,7 +186,7 @@ export function campaignMap(
       wins,
       losses,
       casualties: record ? record.casualties : 0,
-      bestTroops: record ? record.bestTroops : 0,
+      bestKills: record ? record.bestKills : 0,
       deployable,
     };
   });
@@ -237,39 +242,41 @@ export interface UpgradeDefinition {
   readonly baseCost: number;
   /** Additional bonds per level already owned. */
   readonly costStep: number;
-  /** Effect per level, so the camp screen and the simulation agree. */
+  /** Effect per level, so the camp screen and the battle agree. */
   readonly perLevel: {
-    /** Extra troops at deployment. */
-    readonly troops?: number;
-    /** Multiplicative bonus to projectile damage. */
+    /** Extra supplies banked when a battle opens. */
+    readonly supplies?: number;
+    /** Multiplicative bonus to unit damage. */
     readonly damage?: number;
-    /** Multiplicative bonus to rounds per second. */
+    /** Multiplicative bonus to unit rate of fire. */
     readonly fireRate?: number;
-    /** Extra mid-run revives. */
-    readonly revives?: number;
+    /** Extra hit points on the player's base. */
+    readonly baseHp?: number;
   };
 }
 
-/** Troops a stock squad deploys with, before any Starting Squad levels. */
-export const BASE_SQUAD_TROOPS = 3;
-export const TROOPS_PER_ARMOUR_LEVEL = 1;
+/** Supplies banked at the start of a battle, before any Starting Supplies levels. */
+export const BASE_START_SUPPLIES = 60;
+/** Effects of one level on each track. */
+export const SUPPLIES_PER_ARMOUR_LEVEL = 30;
 export const DAMAGE_PER_FIREPOWER_LEVEL = 0.15;
 export const FIRE_RATE_PER_MOBILITY_LEVEL = 0.06;
-export const REVIVES_PER_MEDKIT_LEVEL = 1;
+export const BASE_HP_PER_MEDKIT_LEVEL = 200;
 
 /**
  * Upgrade tracks sold at camp. The ids are persisted, so they are stable;
- * `name` is the label the camp screen shows.
+ * `name` is the label the camp screen shows. All four feed the battle:
+ * supplies, damage, rate of fire and the base's own hit points.
  */
 export const UPGRADES: readonly UpgradeDefinition[] = [
   {
     id: 'armour',
-    name: 'Starting Squad',
-    description: 'Deploy with more troopers in the line.',
+    name: 'Starting Supplies',
+    description: 'Open each battle with a fuller depot.',
     maxLevel: 5,
     baseCost: 140,
     costStep: 100,
-    perLevel: { troops: TROOPS_PER_ARMOUR_LEVEL },
+    perLevel: { supplies: SUPPLIES_PER_ARMOUR_LEVEL },
   },
   {
     id: 'firepower',
@@ -283,7 +290,7 @@ export const UPGRADES: readonly UpgradeDefinition[] = [
   {
     id: 'mobility',
     name: 'Fire Rate',
-    description: 'The squad works the bolt faster.',
+    description: 'Faster reloads and rate of fire.',
     maxLevel: 5,
     baseCost: 110,
     costStep: 80,
@@ -291,12 +298,12 @@ export const UPGRADES: readonly UpgradeDefinition[] = [
   },
   {
     id: 'medkit',
-    name: 'Field Medkit',
-    description: 'One extra revive per run.',
+    name: 'Fortifications',
+    description: 'Thicker walls on your own base.',
     maxLevel: 3,
     baseCost: 200,
     costStep: 150,
-    perLevel: { revives: REVIVES_PER_MEDKIT_LEVEL },
+    perLevel: { baseHp: BASE_HP_PER_MEDKIT_LEVEL },
   },
 ];
 
@@ -310,11 +317,11 @@ export function upgradeEffectLabel(id: UpgradeId, level: number): string {
   const upgrade = UPGRADE_BY_ID.get(id);
   if (!upgrade) return '';
   const parts: string[] = [];
-  const { troops = 0, damage = 0, fireRate = 0, revives = 0 } = upgrade.perLevel;
-  if (troops > 0) parts.push(`+${troops * level} troops (${BASE_SQUAD_TROOPS + troops * level} at deploy)`);
-  if (damage > 0) parts.push(`+${Math.round(damage * level * 100)}% damage`);
-  if (fireRate > 0) parts.push(`+${Math.round(fireRate * level * 100)}% fire rate`);
-  if (revives > 0) parts.push(`+${revives * level} revive${revives * level === 1 ? '' : 's'}`);
+  const { supplies = 0, damage = 0, fireRate = 0, baseHp = 0 } = upgrade.perLevel;
+  if (supplies > 0) parts.push(`+${supplies * level} supplies at deploy`);
+  if (damage > 0) parts.push(`+${Math.round(damage * level * 100)}% unit damage`);
+  if (fireRate > 0) parts.push(`+${Math.round(fireRate * level * 100)}% rate of fire`);
+  if (baseHp > 0) parts.push(`+${baseHp * level} base hit points`);
   return level > 0 ? parts.join(' · ') : 'not upgraded';
 }
 
