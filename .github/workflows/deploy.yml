@@ -1,0 +1,70 @@
+name: deploy
+
+# Builds the app and publishes /dist to GitHub Pages on every push to main.
+#
+# `base` in vite.config.ts is '/frontline-runner/' (matching the repo name), so
+# the site is served from https://<owner>.github.io/frontline-runner/ with the
+# manifest, service worker and 404 fallback all resolving under that subpath.
+#
+# One-time setup: Settings -> Pages -> Source must be "GitHub Actions"
+# (or: curl -X POST /repos/<owner>/<repo>/pages -d '{"build_type":"workflow"}').
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck + build (PWA + 404 fallback)
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          test -f dist/index.html
+          test -f dist/manifest.webmanifest
+          test -f dist/sw.js
+          test -f dist/404.html
+          test -d dist/assets/characters
+          echo "dist size: $(du -sh dist | cut -f1)"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
