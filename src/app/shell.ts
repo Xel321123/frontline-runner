@@ -275,12 +275,15 @@ export async function startShell(root: HTMLElement): Promise<void> {
   // ------------------------------------------------------------------ events
 
   async function unlockAudio(): Promise<void> {
-    if (sound.state === 'locked') {
-      try {
-        await sound.unlock();
-      } catch (error) {
-        console.warn('[audio] unlock failed', error);
-      }
+    // `state` reports 'suspended' both before the graph exists and while the
+    // browser is holding it back for autoplay reasons, so retry unless it is
+    // actually running — otherwise a context created by a non-gesture event
+    // would stay silent for the whole session.
+    if (sound.state === 'running') return;
+    try {
+      await sound.unlock();
+    } catch (error) {
+      console.warn('[audio] unlock failed', error);
     }
   }
 
@@ -418,6 +421,11 @@ export async function startShell(root: HTMLElement): Promise<void> {
   });
 
   storage.subscribe(() => render());
+  // The browser only lets audio start from a gesture: unlock on the first
+  // pointer interaction anywhere, then this becomes a no-op.
+  window.addEventListener('pointerdown', () => {
+    void unlockAudio();
+  });
   window.addEventListener('resize', () => {
     if (orientationLock !== 'idle') void tryLockLandscape();
   });
