@@ -1,39 +1,39 @@
 /**
- * BattleRenderer — composes one frame of the tug-of-war in the fixed 1280x720
- * logical space, and draws the HUD that goes with it.
+ * BattleRenderer — one frame of the tug-of-war, drawn full-bleed.
  *
- * The renderer holds no state: everything it draws is derived from the
- * simulation snapshot, the viewport and the frame rate. That means the same
- * state always produces the same frame (shake included, since the shake offset
- * is a function of `state.time`), and the only thing it caches is the terrain,
- * which is procedural and deterministic anyway.
+ * Two coordinate systems, deliberately separated:
+ *
+ *   world   the 1280x720 simulation space, drawn through the camera (zoom +
+ *           pan). Background layers get a parallax offset proportional to their
+ *           depth, so panning the camera slides the horizon past the fighting.
+ *   screen  canvas CSS pixels, used for everything the player touches: health
+ *           pills, the supply counter, the deployment dock and its buttons.
+ *
+ * Nothing is letterboxed: the camera crops instead of barring, so the canvas
+ * fills 100vw x 100vh at any aspect ratio (see `platform/Viewport.ts`).
+ *
+ * The renderer holds no state. Given the same state, camera and layout it
+ * produces the same frame, shake included, because the shake offset is a
+ * function of `state.time`.
  */
 
 import type { Faction } from '../core/types';
-import {
-  BASE_BAR_HEIGHT,
-  BASE_BAR_WIDTH,
-  DEPLOY_SLOTS,
-  LOGISTICS_RECT,
-  READOUT_RECT,
-  TOP_BAR_HEIGHT,
-} from '../game/hud';
+import { environmentRules } from '../game/environment';
 import {
   BASE_X,
   ENEMY_BASE_X,
   GROUND_Y,
   LOGISTICS_MAX_LEVEL,
   MAX_UNITS_PER_SIDE,
-  VIEW_HEIGHT,
-  VIEW_WIDTH,
 } from '../game/constants';
-import { environmentRules } from '../game/environment';
-import { UNIT_STATS, type UnitKind } from '../game/units';
+import type { HudLayout } from '../game/hud';
+import { UNIT_STATS } from '../game/units';
 import type { TugState, Unit } from '../game/tugTypes';
-import { computeGameViewport, type GameViewport } from '../platform/Viewport';
+import type { Camera } from '../platform/Viewport';
+import { visibleWorldWidth, worldToScreen } from '../platform/Viewport';
 import { Battlefield } from './battlefield';
 import { drawBattleFeatures } from './battleFeatures';
-import { drawMuzzleFlash, drawMuzzleSmoke, drawParticles, drawShadow } from './effects';
+import { drawBlastScorch, drawMuzzleFlash, drawParticle, drawShell, drawTracer } from './effects';
 import {
   drawCorpse,
   drawSandbags,
@@ -43,12 +43,12 @@ import {
   drawUnitIcon,
 } from './figures';
 import {
+  AXIS_PALETTE,
   FONT,
   SCENE,
+  SCENE_LOOKS,
   helmetFor,
   paletteFor,
-  sceneLook,
-  type FactionPalette,
 } from './palette';
 import { drawAtmosphere } from './weather';
 
@@ -57,13 +57,13 @@ export interface BattleHudInfo {
   readonly year: string;
   readonly strongpoint: string;
   readonly faction: Faction;
-  readonly enemyFaction: Faction;
   readonly tier: number;
   readonly fps: number;
+  readonly paused: boolean;
+  readonly touch: boolean;
+  /** Right-hand side of the pan control: is the camera following the fight? */
+  readonly following: boolean;
 }
-
-/** Kinds drawn in order so vehicles sit over infantry. */
-const DRAW_ORDER: readonly UnitKind[] = ['rifleman', 'smg', 'mg', 'tank'];
 
 export class BattleRenderer {
   private readonly background = new Battlefield();
@@ -71,77 +71,84 @@ export class BattleRenderer {
   draw(
     ctx: CanvasRenderingContext2D,
     state: TugState,
-    cssWidth: number,
-    cssHeight: number,
-    pixelRatio: number,
+    camera: Camera,
+    layout: HudLayout,
     hud: BattleHudInfo,
   ): void {
-    const view: GameViewport = computeGameViewport(
+    const { cssWidth, cssHeight } = camera;
+
+    // --- clear: no bars, so the whole canvas is game ------------------------
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    // --- world pass --------------------------------------------------------
+    const shake = this.shakeOffset(state);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, cssWidth, cssHeight);
+    ctx.clip();
+    ctx.translate(cssWidth / 2 + shake.x, cssHeight / 2 + shake.y);
+    ctx.scale(camera.zoom, camera.zoom);
+    ctx.translate(-camera.focusX, -camera.focusY);
+    this.drawWorld(ctx, state, camera);
+    ctx.restore();
+
+    // --- atmosphere, in screen space so it covers the whole window ---------
+    drawAtmosphere(ctx, {
+      environment: state.environment,
+      rules: environmentRules(state.environment),
+      time: state.time,
+      searchlights: this.screenBeams(state, camera),
       cssWidth,
       cssHeight,
-      VIEW_WIDTH,
-      VIEW_HEIGHT,
-    );
+    });
 
-    // Letterbox bars first, in device space.
-    ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-    ctx.fillStyle = '#050706';
-    ctx.fillRect(0, 0, cssWidth, cssHeight);
+    // --- base alert + result banner ----------------------------------------
+    this.drawBaseAlert(ctx, state, cssWidth, cssHeight);
+    if (state.status !== 'running') this.drawResultBanner(ctx, state, layout);
 
-    // Screen shake: a deterministic function of the simulation state.
-    const shakeX = Math.sin(state.time * 91) * state.shake * 0.7;
-    const shakeY = Math.cos(state.time * 77) * state.shake * 0.45;
-
-    ctx.save();
-    ctx.setTransform(
-      pixelRatio * view.scale,
-      0,
-      0,
-      pixelRatio * view.scale,
-      pixelRatio * (view.offsetX + shakeX * view.scale),
-      pixelRatio * (view.offsetY + shakeY * view.scale),
-    );
-    ctx.beginPath();
-    ctx.rect(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
-    ctx.clip();
-
-    this.drawWorld(ctx, state, hud);
-    ctx.restore();
-
-    // HUD is drawn without the shake so readouts stay legible.
-    ctx.save();
-    ctx.setTransform(
-      pixelRatio * view.scale,
-      0,
-      0,
-      pixelRatio * view.scale,
-      pixelRatio * view.offsetX,
-      pixelRatio * view.offsetY,
-    );
-    ctx.beginPath();
-    ctx.rect(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
-    ctx.clip();
-    this.drawBaseAlert(ctx, state);
-    this.drawHud(ctx, state, hud);
-    ctx.restore();
+    // --- overlay HUD, in screen space --------------------------------------
+    this.drawTopBar(ctx, state, layout, hud);
+    this.drawDock(ctx, state, layout, hud);
+    if (!hud.touch) this.drawKeyboardHints(ctx, state, layout, hud);
   }
 
-  // ------------------------------------------------------------------- world
+  // --------------------------------------------------------------- world pass
 
-  private drawWorld(
-    ctx: CanvasRenderingContext2D,
-    state: TugState,
-    hud: BattleHudInfo,
-  ): void {
-    const allyPalette = paletteFor(hud.faction);
-    const enemyPalette = paletteFor(hud.enemyFaction);
+  private shakeOffset(state: TugState): { x: number; y: number } {
+    if (state.shake <= 0.01) return { x: 0, y: 0 };
+    return {
+      x: Math.sin(state.time * 87) * state.shake,
+      y: Math.cos(state.time * 73) * state.shake * 0.55,
+    };
+  }
 
-    // Re-light the terrain for this sector, then lay the terrain features on it.
+  /** World-space position of each searchlight pool, for the screen overlay. */
+  private screenBeams(state: TugState, camera: Camera): readonly number[] {
+    return state.searchlights.map((beam) => worldToScreen(camera, beam, GROUND_Y).x);
+  }
+
+  private drawWorld(ctx: CanvasRenderingContext2D, state: TugState, camera: Camera): void {
+    const palette = paletteFor(state.playerFaction);
+    const enemyPalette = paletteFor(state.enemyFaction);
+    const helmet = helmetFor(state.playerFaction, state.tier);
+    const look = SCENE_LOOKS[state.environment];
+
+    // Only paint the strip of world the camera can see.
+    const half = visibleWorldWidth(camera) / 2;
+    const from = camera.focusX - half - 40;
+    const to = camera.focusX + half + 40;
+
     this.background.setEnvironment(state.environment);
-    this.background.draw(ctx, { focusX: state.focusX, time: state.time });
-    drawBattleFeatures(ctx, state.features, sceneLook(state.environment), state.time);
+    // The world is only 1280 wide, so painting all of it is cheaper than
+    // working out which tiles the camera can see; the clip does the rest.
+    void from;
+    void to;
+    this.background.draw(ctx, { focusX: camera.focusX, time: state.time });
 
-    // Structures first: troops stand in front of their own emplacement.
+    drawBattleFeatures(ctx, state.features, look, state.time);
+
+    // Structures, then scenery, then the living, then the fallen.
     drawStrongpoint(ctx, {
       x: ENEMY_BASE_X,
       side: 'enemy',
@@ -149,494 +156,437 @@ export class BattleRenderer {
       hpFraction: state.enemyBase.hp / state.enemyBase.maxHp,
       time: state.time,
       flash: state.enemyBase.flash,
-      smoke: state.enemyBase.smoke,
       hit: state.enemyBase.hit,
-      label: hud.strongpoint,
+      label: '',
+      variant: 'stronghold',
     });
     drawStrongpoint(ctx, {
       x: BASE_X,
       side: 'player',
-      palette: allyPalette,
+      palette,
       hpFraction: state.playerBase.hp / state.playerBase.maxHp,
       time: state.time,
       flash: state.playerBase.flash,
-      smoke: state.playerBase.smoke,
       hit: state.playerBase.hit,
-      label: `${hud.faction === 'axis' ? 'Axis' : 'Allied'} base`,
+      label: '',
+      variant: 'hq',
     });
 
-    for (const bag of state.sandbags) {
-      drawSandbags(ctx, bag.x, bag.side === 'player' ? allyPalette : enemyPalette);
+    for (const bags of state.sandbags) {
+      drawSandbags(ctx, bags.x, GROUND_Y, bags.side, paletteFor(bags.side === 'player' ? state.playerFaction : state.enemyFaction));
     }
     for (const corpse of state.corpses) {
-      drawCorpse(ctx, corpse, corpse.side === 'player' ? allyPalette : enemyPalette);
+      drawCorpse(ctx, corpse, paletteFor(state.playerFaction), corpse.maxLife - corpse.life);
     }
 
-    // Smoke hangs behind the troops; everything else reads in front.
-    drawParticles(ctx, state.particles, 'behind');
-
-    for (const kind of DRAW_ORDER) {
-      for (const unit of state.units) {
-        if (unit.kind !== kind) continue;
-        this.drawUnit(
-          ctx,
-          unit,
-          state,
-          unit.side === 'player' ? allyPalette : enemyPalette,
-          unit.side === 'player' ? hud.faction : hud.enemyFaction,
-          hud.tier,
-        );
-      }
+    // Smoke behind the troops so units stay readable through it.
+    for (const particle of state.particles) {
+      if (particle.kind === 'smoke') drawParticle(ctx, particle);
     }
 
-    this.drawProjectiles(ctx, state);
-    drawParticles(ctx, state.particles, 'front');
+    const tanks: Unit[] = [];
+    const infantry: Unit[] = [];
+    for (const unit of state.units) ((unit.kind === 'tank' ? tanks : infantry).push(unit));
 
-    // Weather goes over everything in the world: snow in front of the troops,
-    // a sandstorm washing out the distance, darkness and searchlights at night.
-    drawAtmosphere(ctx, {
-      environment: state.environment,
-      rules: environmentRules(state.environment),
-      time: state.time,
-      searchlights: state.searchlights,
-    });
-  }
-
-  private drawUnit(
-    ctx: CanvasRenderingContext2D,
-    unit: Unit,
-    state: TugState,
-    palette: FactionPalette,
-    faction: Faction,
-    tier: number,
-  ): void {
-    const stats = UNIT_STATS[unit.kind];
-    const helmet = helmetFor(faction, tier);
-    const hpFraction = unit.maxHp > 0 ? unit.hp / unit.maxHp : 0;
-    const walking = unit.state === 'advance';
-
-    const muzzle =
-      unit.kind === 'tank'
-        ? drawTank(ctx, {
-            x: unit.x,
-            palette,
-            facing: unit.facing,
-            time: state.time,
-            hpFraction,
-            spawn: unit.spawn,
-            recoil: unit.recoil,
-            rolling: walking,
-          })
-        : drawSoldier(ctx, {
-            x: unit.x,
-            kind: unit.kind,
-            palette,
-            helmet,
-            facing: unit.facing,
-            time: state.time,
-            phase: unit.id * 1.7,
-            walking,
-            dugIn: unit.dugIn,
-            hpFraction,
-            spawn: unit.spawn,
-            recoil: unit.recoil,
-            suppressed: unit.suppressed > 0,
-          });
-
-    if (unit.flash > 0) {
-      drawMuzzleFlash(ctx, muzzle.muzzleX, muzzle.muzzleY, unit.facing, unit.flash / 0.07);
-      if (unit.kind === 'tank') {
-        drawMuzzleSmoke(ctx, muzzle.muzzleX, muzzle.muzzleY, unit.facing, 0.8);
-      }
-    }
-
-    // A soldier holding a dugout gets a parapet tick; one caught in a
-    // searchlight is rimmed in warm light, because that is what is hurting him.
-    if (unit.trenchCover) {
-      ctx.save();
-      ctx.globalAlpha = 0.75;
-      ctx.strokeStyle = '#8f9d6a';
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.moveTo(unit.x - 9, GROUND_Y - 3);
-      ctx.lineTo(unit.x + 9, GROUND_Y - 3);
-      ctx.stroke();
-      ctx.restore();
-    }
-    if (unit.illuminated) {
-      ctx.save();
-      const halo = ctx.createRadialGradient(
-        unit.x,
-        GROUND_Y - stats.height * 0.5,
-        2,
-        unit.x,
-        GROUND_Y - stats.height * 0.5,
-        stats.height,
+    for (const unit of [...infantry, ...tanks]) {
+      const unitPalette = unit.side === 'player' ? palette : enemyPalette;
+      const unitHelmet = helmetFor(
+        unit.side === 'player' ? state.playerFaction : state.enemyFaction,
+        state.tier,
       );
-      halo.addColorStop(0, 'rgba(255, 246, 206, 0.34)');
-      halo.addColorStop(1, 'rgba(255, 246, 206, 0)');
-      ctx.fillStyle = halo;
-      ctx.beginPath();
-      ctx.arc(unit.x, GROUND_Y - stats.height * 0.5, stats.height, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    // Suppressed troops show a small marker so the MG's effect is visible.
-    if (unit.suppressed > 0) {
-      ctx.save();
-      ctx.globalAlpha = 0.7;
-      ctx.fillStyle = SCENE.warning;
-      ctx.fillRect(unit.x - 7, GROUND_Y - stats.height - 12, 14, 2);
-      ctx.restore();
-    }
-
-    // Damaged units carry a slim health bar.
-    if (hpFraction < 0.999 && unit.spawn > 0.9) {
-      const width = Math.max(16, stats.radius * 2.2);
-      ctx.fillStyle = 'rgba(10, 12, 10, 0.6)';
-      ctx.fillRect(unit.x - width / 2, GROUND_Y - stats.height - 9, width, 3);
-      ctx.fillStyle =
-        unit.side === 'player' ? SCENE.playerHp : SCENE.enemyHp;
-      ctx.fillRect(unit.x - width / 2, GROUND_Y - stats.height - 9, width * hpFraction, 3);
-    }
-  }
-
-  private drawProjectiles(ctx: CanvasRenderingContext2D, state: TugState): void {
-    for (const shot of state.projectiles) {
-      if (shot.kind === 'bullet') {
-        // Tracer: a short streak along the direction of travel.
-        ctx.save();
-        ctx.strokeStyle = SCENE.tracer;
-        ctx.globalAlpha = 0.85;
-        ctx.lineWidth = 1.8;
-        ctx.beginPath();
-        ctx.moveTo(shot.x - Math.sign(shot.vx) * 12, shot.y);
-        ctx.lineTo(shot.x, shot.y);
-        ctx.stroke();
-        ctx.restore();
+      if (unit.kind === 'tank') {
+        const muzzle = drawTank(ctx, {
+          x: unit.x,
+          palette: unitPalette,
+          facing: unit.facing,
+          time: state.time,
+          hpFraction: unit.hp / unit.maxHp,
+          spawn: unit.spawn,
+          recoil: unit.recoil,
+          illuminated: unit.illuminated,
+        });
+        if (unit.flash > 0) {
+          drawMuzzleFlash(ctx, muzzle.muzzleX, muzzle.muzzleY, unit.facing, unit.flash * 12, state.time);
+        }
       } else {
+        const muzzle = drawSoldier(ctx, {
+          x: unit.x,
+          palette: unitPalette,
+          helmet: unitHelmet,
+          kind: unit.kind,
+          facing: unit.facing,
+          time: state.time,
+          phase: unit.id * 1.7,
+          walking: unit.state === 'advance',
+          dugIn: unit.dugIn,
+          hpFraction: unit.hp / unit.maxHp,
+          spawn: unit.spawn,
+          recoil: unit.recoil,
+          illuminated: unit.illuminated,
+          stagger: unit.stagger,
+        });
+        if (unit.flash > 0) {
+          drawMuzzleFlash(
+            ctx,
+            muzzle.muzzleX,
+            muzzle.muzzleY,
+            unit.facing,
+            unit.flash * 10,
+            state.time,
+          );
+        }
+      }
+      // Searchlight halo: the danger of standing in a beam has to be visible.
+      if (unit.illuminated) {
         ctx.save();
-        drawShadow(ctx, shot.x, GROUND_Y, 10, 0.12);
-        ctx.fillStyle = '#33302a';
+        ctx.globalAlpha = 0.28;
+        ctx.fillStyle = '#fff4cc';
         ctx.beginPath();
-        ctx.ellipse(shot.x, shot.y, 5, 2.4, Math.atan2(shot.vy, shot.vx), 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = 'rgba(255, 214, 140, 0.55)';
-        ctx.beginPath();
-        ctx.arc(shot.x - Math.sign(shot.vx) * 5, shot.y, 2, 0, Math.PI * 2);
+        ctx.ellipse(unit.x, GROUND_Y - UNIT_STATS[unit.kind].height * 0.55, 22, 30, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
       }
     }
+
+    for (const shot of state.projectiles) {
+      if (shot.kind === 'shell') drawShell(ctx, shot);
+      else drawTracer(ctx, shot);
+    }
+
+    // Blast scorch marks, then the particles in front of the troops.
+    for (const particle of state.particles) {
+      if (particle.kind === 'dust' && particle.maxLife - particle.life > 1.2) {
+        drawBlastScorch(ctx, particle.x, 26, particle.life / particle.maxLife);
+      }
+      if (particle.kind !== 'smoke') drawParticle(ctx, particle);
+    }
+    void helmet;
   }
 
-  // --------------------------------------------------------------------- HUD
+  // ------------------------------------------------------------------ overlay
 
-  private drawHud(
-    ctx: CanvasRenderingContext2D,
-    state: TugState,
-    hud: BattleHudInfo,
-  ): void {
-    this.drawTopBar(ctx, state, hud);
-    this.drawDeployBar(ctx, state, hud);
-    if (state.status !== 'running') this.drawResultBanner(ctx, state);
-  }
-
+  /**
+   * The top overlay: health pills either side, supplies/clock/bonds in the
+   * middle, the objective line beneath, and the pause/exit controls. All
+   * translucent — the battlefield shows through everything.
+   */
   private drawTopBar(
     ctx: CanvasRenderingContext2D,
     state: TugState,
+    layout: HudLayout,
     hud: BattleHudInfo,
   ): void {
-    ctx.fillStyle = SCENE.hudPanel;
-    ctx.fillRect(0, 0, VIEW_WIDTH, TOP_BAR_HEIGHT);
-    ctx.strokeStyle = SCENE.hudLine;
-    ctx.lineWidth = 1;
+    const { scale } = layout;
+    const playerHp = Math.max(0, state.playerBase.hp / state.playerBase.maxHp);
+    const enemyHp = Math.max(0, state.enemyBase.hp / state.enemyBase.maxHp);
+
+    this.drawHealthPill(ctx, layout.playerBar, playerHp, 'hq', hud.faction, layout);
+    this.drawHealthPill(ctx, layout.enemyBar, enemyHp, 'enemy', null, layout);
+
+    // Centre: clock, supplies, bonds — one pill each, no chrome.
+    const cx = layout.cssWidth / 2;
+    const minute = Math.floor(state.time / 60);
+    const second = Math.floor(state.time % 60);
+    const clock = `${minute}:${second.toString().padStart(2, '0')}`;
+    const remaining = Math.max(0, Math.ceil(state.timeLeft));
+
+    ctx.textAlign = 'center';
+    ctx.font = `700 ${Math.round(17 * scale)}px ${FONT}`;
+    ctx.fillStyle = state.timeLeft < 20 ? SCENE.warning : SCENE.hud;
+    ctx.fillText(clock, cx, layout.playerBar.y + layout.playerBar.h);
+
+    ctx.font = `700 ${Math.round(12 * scale)}px ${FONT}`;
+    const supplyText = `${Math.floor(state.supplies)}`;
+    const rateText = `+${state.supplyRate.toFixed(1)}/s`;
+    const statW = Math.max(120 * scale, 150 * scale);
+    const statY = layout.playerBar.y + layout.playerBar.h + Math.round(4 * scale);
+    ctx.fillStyle = 'rgba(10, 13, 10, 0.42)';
     ctx.beginPath();
-    ctx.moveTo(0, TOP_BAR_HEIGHT + 0.5);
-    ctx.lineTo(VIEW_WIDTH, TOP_BAR_HEIGHT + 0.5);
-    ctx.stroke();
-
-    // Player base health, left.
-    this.drawBaseBar(
-      ctx,
-      16,
-      14,
-      BASE_BAR_WIDTH,
-      state.playerBase.hp / state.playerBase.maxHp,
-      SCENE.playerHp,
-      false,
-      `${hud.faction === 'axis' ? 'AXIS' : 'ALLIED'} BASE`,
-      `${Math.ceil(state.playerBase.hp)} / ${state.playerBase.maxHp}`,
-    );
-
-    // Enemy strongpoint health, right (bar fills right-to-left).
-    this.drawBaseBar(
-      ctx,
-      VIEW_WIDTH - 16 - BASE_BAR_WIDTH,
-      14,
-      BASE_BAR_WIDTH,
-      state.enemyBase.hp / state.enemyBase.maxHp,
-      SCENE.enemyHp,
-      true,
-      hud.strongpoint.toUpperCase(),
-      `${Math.ceil(state.enemyBase.hp)} / ${state.enemyBase.maxHp}`,
-    );
-
-    // Clock, supplies and bonds in the middle.
-    const cx = VIEW_WIDTH / 2;
-    const minutes = Math.floor(state.time / 60);
-    const seconds = Math.floor(state.time % 60);
-    ctx.textAlign = 'center';
-    ctx.font = `700 20px ${FONT}`;
-    ctx.fillStyle = state.timeLeft < 30 ? SCENE.warning : SCENE.hud;
-    ctx.fillText(`${minutes}:${String(seconds).padStart(2, '0')}`, cx, 26);
-
-    ctx.font = `600 12px ${FONT}`;
-    ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText(`${hud.nodeName} · ${hud.year} · tier ${hud.tier}`, cx, 44);
-    // The objective and the weather, because both change how the battle is won.
-    ctx.font = `700 10.5px ${FONT}`;
-    ctx.fillStyle = SCENE.warning;
-    ctx.fillText(this.situationText(state), cx, 57);
-
-    // Supplies readout under the clock, left of centre.
-    this.drawCurrency(ctx, cx - 150, 20, 'SUPPLIES', Math.floor(state.supplies), `+${state.supplyRate.toFixed(1)}/s`, SCENE.hud);
-    this.drawCurrency(ctx, cx + 150, 20, 'WAR BONDS', state.bonds, `logistics L${state.logisticsLevel}`, SCENE.bond);
-
-    ctx.textAlign = 'left';
-    ctx.font = `500 11px ${FONT}`;
-    ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText(
-      `${hud.fps.toFixed(0)} fps · ${environmentRules(state.environment).hint}`,
-      16,
-      TOP_BAR_HEIGHT - 6,
-    );
-    ctx.textAlign = 'right';
-    const atCap = state.playerUnits >= MAX_UNITS_PER_SIDE;
-    ctx.fillStyle = atCap ? SCENE.warning : SCENE.hudDim;
-    ctx.fillText(
-      `fielded ${state.stats.deployed} · kills ${state.stats.kills}${atCap ? ' · LINE FULL' : ''}`,
-      VIEW_WIDTH - 16,
-      TOP_BAR_HEIGHT - 6,
-    );
-    ctx.textAlign = 'left';
-  }
-
-  private drawBaseBar(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    width: number,
-    fraction: number,
-    color: string,
-    mirrored: boolean,
-    label: string,
-    value: string,
-  ): void {
-    ctx.fillStyle = 'rgba(8, 10, 8, 0.75)';
-    ctx.fillRect(x, y, width, BASE_BAR_HEIGHT);
-    ctx.strokeStyle = SCENE.hudLine;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x + 0.5, y + 0.5, width - 1, BASE_BAR_HEIGHT - 1);
-
-    const clamped = Math.max(0, Math.min(1, fraction));
-    const fillW = (width - 4) * clamped;
-    ctx.fillStyle = color;
-    ctx.fillRect(mirrored ? x + width - 2 - fillW : x + 2, y + 2, fillW, BASE_BAR_HEIGHT - 4);
-
-    ctx.font = `700 11px ${FONT}`;
+    ctx.roundRect(cx - statW / 2, statY, statW, Math.round(30 * scale), 8 * scale);
+    ctx.fill();
     ctx.fillStyle = SCENE.hud;
-    ctx.textAlign = mirrored ? 'right' : 'left';
-    ctx.fillText(label, mirrored ? x + width : x, y + BASE_BAR_HEIGHT + 13);
-    ctx.textAlign = mirrored ? 'left' : 'right';
+    ctx.font = `700 ${Math.round(17 * scale)}px ${FONT}`;
+    ctx.fillText(supplyText, cx - statW * 0.22, statY + Math.round(21 * scale));
+    ctx.font = `600 ${Math.round(10.5 * scale)}px ${FONT}`;
     ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText(value, mirrored ? x : x + width, y + BASE_BAR_HEIGHT + 13);
+    ctx.fillText('supplies', cx - statW * 0.22, statY + Math.round(29 * scale));
+    ctx.font = `700 ${Math.round(15 * scale)}px ${FONT}`;
+    ctx.fillStyle = state.bonds > 0 ? SCENE.bond : SCENE.hudDim;
+    ctx.fillText(`${state.bonds}`, cx + statW * 0.24, statY + Math.round(21 * scale));
+    ctx.font = `600 ${Math.round(10.5 * scale)}px ${FONT}`;
+    ctx.fillStyle = SCENE.hudDim;
+    ctx.fillText('bonds', cx + statW * 0.24, statY + Math.round(29 * scale));
+    ctx.fillStyle = SCENE.hudDim;
+    ctx.font = `600 ${Math.round(10 * scale)}px ${FONT}`;
+    ctx.fillText(rateText, cx + statW * 0.24, statY + Math.round(39 * scale));
+
+    // Objective + weather, and the sector's remaining time for a hold mission.
+    const objective = this.objectiveText(state);
+    ctx.font = `600 ${Math.round(10.5 * scale)}px ${FONT}`;
+    ctx.fillStyle = SCENE.warning;
+    const holdLine =
+      state.missionType === 'survive_timer' ? ` · HOLD ${remaining}s` : '';
+    ctx.fillText(`${objective}${holdLine}`, cx, statY + Math.round(52 * scale));
+
+    // Pause + exit buttons.
+    this.drawIconButton(ctx, layout.pause, state.status === 'running' ? '❚❚' : '▶', layout);
+    this.drawIconButton(ctx, layout.exit, '✕', layout);
+    ctx.textAlign = 'left';
+
+    // FPS, for the diagnostics-minded: bottom-left, above the dock, where it
+    // cannot collide with the pause/exit controls.
+    ctx.font = `600 ${Math.round(9.5 * scale)}px ${FONT}`;
+    ctx.fillStyle = 'rgba(210, 224, 205, 0.45)';
+    ctx.fillText(
+      `${hud.fps.toFixed(0)} fps`,
+      layout.pad,
+      layout.cssHeight - layout.dockHeight - Math.round(6 * scale),
+    );
     ctx.textAlign = 'left';
   }
 
-  private drawCurrency(
+  private drawHealthPill(
     ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    label: string,
-    value: number,
-    suffix: string,
-    color: string,
+    rect: { x: number; y: number; w: number; h: number },
+    fraction: number,
+    kind: 'hq' | 'enemy',
+    faction: Faction | null,
+    layout: HudLayout,
   ): void {
-    ctx.textAlign = 'center';
-    ctx.font = `600 10px ${FONT}`;
-    ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText(label, x, y - 2);
-    ctx.font = `700 22px ${FONT}`;
-    ctx.fillStyle = color;
-    ctx.fillText(String(value), x, y + 20);
-    ctx.font = `500 10px ${FONT}`;
-    ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText(suffix, x, y + 34);
+    const scale = layout.scale;
+    ctx.save();
+    ctx.fillStyle = 'rgba(10, 13, 10, 0.42)';
+    ctx.beginPath();
+    ctx.roundRect(rect.x - 2, rect.y - 2, rect.w + 4, rect.h + 4, 6 * scale);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(8, 10, 8, 0.7)';
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    const fill = kind === 'enemy' ? SCENE.enemyHp : SCENE.playerHp;
+    ctx.fillStyle = fraction > 0.3 ? fill : SCENE.warning;
+    // The enemy's bar drains from the right, so both read as "your side".
+    const width = rect.w * Math.max(0, Math.min(1, fraction));
+    ctx.fillRect(kind === 'enemy' ? rect.x + rect.w - width : rect.x, rect.y, width, rect.h);
+
+    const palette = faction ? paletteFor(faction) : AXIS_PALETTE;
+    ctx.font = `700 ${Math.round(10 * scale)}px ${FONT}`;
+    ctx.textAlign = kind === 'enemy' ? 'right' : 'left';
+    const x = kind === 'enemy' ? rect.x + rect.w : rect.x;
+    // Label and figure sit *under* the bar: above it there are controls.
+    ctx.fillStyle = palette.accent;
+    ctx.fillText(kind === 'enemy' ? 'ENEMY' : 'YOUR BASE', x, rect.y + rect.h + 11 * scale);
+    ctx.fillStyle = SCENE.hud;
+    ctx.fillText(`${Math.round(fraction * 100)}%`, x, rect.y + rect.h + 22 * scale);
+    ctx.restore();
     ctx.textAlign = 'left';
   }
 
-  private drawDeployBar(
+  private drawIconButton(
+    ctx: CanvasRenderingContext2D,
+    rect: { x: number; y: number; w: number; h: number },
+    glyph: string,
+    layout: HudLayout,
+  ): void {
+    ctx.save();
+    ctx.fillStyle = 'rgba(10, 13, 10, 0.42)';
+    ctx.beginPath();
+    ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 8 * layout.scale);
+    ctx.fill();
+    ctx.fillStyle = SCENE.hud;
+    ctx.font = `700 ${Math.round(12 * layout.scale)}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(glyph, rect.x + rect.w / 2, rect.y + rect.h / 2 + 4 * layout.scale);
+    ctx.restore();
+    ctx.textAlign = 'left';
+  }
+
+  /**
+   * The deployment dock: four thumb-sized cards with a bold portrait, a supply
+   * badge and a circular cooldown sweep, plus the logistics card.
+   */
+  private drawDock(
     ctx: CanvasRenderingContext2D,
     state: TugState,
+    layout: HudLayout,
     hud: BattleHudInfo,
   ): void {
-    const barY = VIEW_HEIGHT - 104;
-    ctx.fillStyle = SCENE.hudPanel;
-    ctx.fillRect(0, barY, VIEW_WIDTH, 104);
-    ctx.strokeStyle = SCENE.hudLine;
-    ctx.beginPath();
-    ctx.moveTo(0, barY + 0.5);
-    ctx.lineTo(VIEW_WIDTH, barY + 0.5);
-    ctx.stroke();
+    const { scale } = layout;
+    const palette = paletteFor(state.playerFaction);
+    const helmet = helmetFor(state.playerFaction, hud.tier);
+    const atCap = state.playerUnits >= MAX_UNITS_PER_SIDE;
 
-    const palette = paletteFor(hud.faction);
-
-    // Deploy slots.
-    for (const slot of DEPLOY_SLOTS) {
+    for (const slot of layout.slots) {
       const option = state.deployOptions.find((entry) => entry.kind === slot.kind);
-      const affordable = option ? option.affordable : false;
-      const ready = option ? option.ready : false;
-      const rect = slot.rect;
-
-      ctx.fillStyle = ready ? 'rgba(24, 32, 25, 0.96)' : 'rgba(16, 20, 17, 0.9)';
-      ctx.beginPath();
-      ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 8);
-      ctx.fill();
-      ctx.strokeStyle = ready ? SCENE.playerHp : SCENE.hudLine;
-      ctx.lineWidth = ready ? 1.6 : 1;
-      ctx.stroke();
-
-      drawUnitIcon(ctx, slot.kind, palette, helmetFor(hud.faction, hud.tier), rect.x + 34, rect.y + 66, 1.15);
-
-      ctx.globalAlpha = ready ? 1 : 0.45;
-      ctx.font = `700 12px ${FONT}`;
-      ctx.fillStyle = SCENE.hud;
-      // maxWidth keeps a long name from bleeding into the next slot.
-      ctx.fillText(UNIT_STATS[slot.kind].name.toUpperCase(), rect.x + 60, rect.y + 22, rect.w - 66);
-
-      ctx.font = `500 10.5px ${FONT}`;
-      ctx.fillStyle = SCENE.hudDim;
-      ctx.fillText(this.unitBlurb(slot.kind), rect.x + 60, rect.y + 38, rect.w - 66);
-
       const stats = UNIT_STATS[slot.kind];
       const price = option ? option.cost : stats.cost;
-      const surcharged = price !== stats.cost;
-      ctx.font = `700 14px ${FONT}`;
-      ctx.fillStyle = affordable ? SCENE.hud : SCENE.enemyHp;
-      ctx.fillText(`${price}`, rect.x + 62, rect.y + 74);
-      ctx.font = `500 10px ${FONT}`;
-      ctx.fillStyle = surcharged ? SCENE.warning : SCENE.hudDim;
-      ctx.fillText(
-        surcharged ? 'supplies · terrain' : 'supplies',
-        rect.x + 62 + ctx.measureText(`${price}`).width + 6,
-        rect.y + 74,
+      const affordable = option ? option.affordable : false;
+      const ready = option ? option.ready : false;
+      const cooldown = option ? option.cooldown : 0;
+      const total = option ? option.cooldownTotal : stats.deployCooldown;
+      const rect = slot.rect;
+
+      // Card: translucent so the battlefield reads through it.
+      ctx.fillStyle = ready ? 'rgba(20, 28, 21, 0.62)' : 'rgba(12, 16, 13, 0.55)';
+      ctx.beginPath();
+      ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 10 * scale);
+      ctx.fill();
+      ctx.strokeStyle = ready ? SCENE.playerHp : 'rgba(120, 132, 116, 0.35)';
+      ctx.lineWidth = ready ? 2 : 1.2;
+      ctx.stroke();
+
+      // A translucent plate behind the portrait: the card sits over whatever the
+      // battlefield is doing, and a pale snowfield would otherwise wash it out.
+      ctx.save();
+      ctx.fillStyle = 'rgba(8, 11, 9, 0.42)';
+      ctx.beginPath();
+      ctx.ellipse(
+        slot.iconX,
+        slot.iconY + Math.round(2 * scale),
+        rect.w * 0.3,
+        rect.h * 0.36,
+        0,
+        0,
+        Math.PI * 2,
       );
+      ctx.fill();
+      ctx.restore();
+
+      drawUnitIcon(ctx, slot.kind, palette, helmet, slot.iconX, rect.y + rect.h * 0.82, slot.iconScale);
+
+      // Name, then the supply badge.
+      ctx.textAlign = 'center';
+      ctx.globalAlpha = affordable ? 1 : 0.5;
+      ctx.font = `700 ${Math.round(10 * scale)}px ${FONT}`;
+      ctx.fillStyle = SCENE.hud;
+      ctx.fillText(
+        stats.name.toUpperCase(),
+        slot.iconX,
+        rect.y + Math.round(13 * scale),
+        rect.w - 8,
+      );
+
+      const badgeW = Math.round(Math.min(rect.w - 12, 62 * scale));
+      const badgeH = Math.round(16 * scale);
+      const badgeX = slot.iconX - badgeW / 2;
+      const badgeY = rect.y + rect.h - badgeH - Math.round(5 * scale);
+      ctx.fillStyle = affordable ? 'rgba(60, 74, 44, 0.9)' : 'rgba(52, 34, 32, 0.85)';
+      ctx.beginPath();
+      ctx.roundRect(badgeX, badgeY, badgeW, badgeH, badgeH / 2);
+      ctx.fill();
+      ctx.font = `700 ${Math.round(11 * scale)}px ${FONT}`;
+      ctx.fillStyle = affordable ? '#e6f0cf' : '#e8b0a4';
+      ctx.fillText(`${price}`, badgeX + badgeW * 0.5, badgeY + badgeH * 0.72);
       ctx.globalAlpha = 1;
 
-      // Deployment cooldown: a descending veil with the seconds left, so the
-      // bar itself is the timer.
-      if (option && option.cooldown > 0.01 && option.cooldownTotal > 0) {
-        const fraction = Math.min(1, option.cooldown / option.cooldownTotal);
-        const inner = { x: rect.x + 2, y: rect.y + 2, w: rect.w - 4, h: rect.h - 4 };
+      // Circular cooldown sweep, drawn from 12 o'clock.
+      if (cooldown > 0.01 && total > 0) {
+        const cx = slot.iconX;
+        const cy = slot.iconY;
+        const radius = Math.min(rect.w, rect.h) * 0.42;
+        const progress = Math.max(0, Math.min(1, cooldown / total));
         ctx.save();
+        ctx.fillStyle = 'rgba(8, 11, 9, 0.5)';
         ctx.beginPath();
-        ctx.roundRect(inner.x, inner.y, inner.w, inner.h, 7);
-        ctx.clip();
-        ctx.fillStyle = 'rgba(6, 9, 7, 0.72)';
-        ctx.fillRect(inner.x, inner.y, inner.w, inner.h * fraction);
-        ctx.font = `700 17px ${FONT}`;
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(232, 193, 90, 0.9)';
+        ctx.lineWidth = Math.max(2, 3 * scale);
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - progress));
+        ctx.stroke();
         ctx.fillStyle = SCENE.warning;
+        ctx.font = `700 ${Math.round(13 * scale)}px ${FONT}`;
         ctx.textAlign = 'center';
-        ctx.fillText(option.cooldown.toFixed(1), rect.x + rect.w * 0.5, rect.y + rect.h * 0.5 + 2);
-        ctx.textAlign = 'left';
+        ctx.fillText(cooldown.toFixed(1), cx, cy + 5 * scale);
         ctx.restore();
+        ctx.textAlign = 'center';
       }
 
-      // Hotkey badge.
-      ctx.fillStyle = 'rgba(8, 10, 8, 0.8)';
-      ctx.beginPath();
-      ctx.roundRect(rect.x + rect.w - 22, rect.y + 8, 14, 14, 3);
-      ctx.fill();
-      ctx.font = `700 10px ${FONT}`;
-      ctx.fillStyle = SCENE.hudDim;
-      ctx.textAlign = 'center';
-      ctx.fillText(slot.hotkey, rect.x + rect.w - 15, rect.y + 18);
+      // Hotkey badge, top-left of the card (desktop only).
+      if (!hud.touch) {
+        ctx.fillStyle = 'rgba(8, 10, 8, 0.6)';
+        ctx.beginPath();
+        ctx.roundRect(rect.x + 5, rect.y + 5, 14 * scale, 14 * scale, 4 * scale);
+        ctx.fill();
+        ctx.font = `700 ${Math.round(9.5 * scale)}px ${FONT}`;
+        ctx.fillStyle = SCENE.hudDim;
+        ctx.fillText(slot.hotkey, rect.x + 5 + 7 * scale, rect.y + 5 + 10 * scale);
+      }
+      if (atCap) {
+        ctx.font = `700 ${Math.round(9.5 * scale)}px ${FONT}`;
+        ctx.fillStyle = SCENE.warning;
+        ctx.fillText('LINE FULL', slot.iconX, rect.y + rect.h - Math.round(26 * scale));
+      }
       ctx.textAlign = 'left';
     }
 
-    // In-match logistics upgrade.
+    // --- logistics card -----------------------------------------------------
+    const lr = layout.logistics;
     const maxed = state.logisticsLevel >= LOGISTICS_MAX_LEVEL;
     const canBuy = !maxed && state.bonds >= state.logisticsCost;
-    ctx.fillStyle = canBuy ? 'rgba(38, 34, 20, 0.96)' : 'rgba(16, 20, 17, 0.9)';
+    ctx.fillStyle = canBuy ? 'rgba(40, 36, 18, 0.68)' : 'rgba(12, 16, 13, 0.55)';
     ctx.beginPath();
-    ctx.roundRect(LOGISTICS_RECT.x, LOGISTICS_RECT.y, LOGISTICS_RECT.w, LOGISTICS_RECT.h, 8);
+    ctx.roundRect(lr.x, lr.y, lr.w, lr.h, 10 * scale);
     ctx.fill();
-    ctx.strokeStyle = canBuy ? SCENE.bond : SCENE.hudLine;
-    ctx.lineWidth = canBuy ? 1.6 : 1;
+    ctx.strokeStyle = canBuy ? SCENE.bond : 'rgba(120, 132, 116, 0.35)';
+    ctx.lineWidth = canBuy ? 2 : 1.2;
     ctx.stroke();
 
-    ctx.font = `700 12px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.font = `700 ${Math.round(10.5 * scale)}px ${FONT}`;
     ctx.fillStyle = SCENE.hud;
-    ctx.fillText('BOOST LOGISTICS', LOGISTICS_RECT.x + 14, LOGISTICS_RECT.y + 22);
-    ctx.font = `500 10.5px ${FONT}`;
+    ctx.fillText('BOOST LOGISTICS', lr.x + lr.w / 2, lr.y + 16 * scale, lr.w - 8);
+    ctx.font = `600 ${Math.round(9.5 * scale)}px ${FONT}`;
     ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText('+0.6 supplies/s, permanently this battle', LOGISTICS_RECT.x + 14, LOGISTICS_RECT.y + 38);
+    ctx.fillText('+0.6 supplies/s this battle', lr.x + lr.w / 2, lr.y + 28 * scale, lr.w - 8);
+
     // Level pips.
+    const pipW = Math.min(18 * scale, (lr.w - 24) / LOGISTICS_MAX_LEVEL - 4);
     for (let i = 0; i < LOGISTICS_MAX_LEVEL; i += 1) {
-      ctx.fillStyle = i < state.logisticsLevel ? SCENE.bond : 'rgba(60, 68, 58, 0.9)';
-      ctx.fillRect(LOGISTICS_RECT.x + 14 + i * 16, LOGISTICS_RECT.y + 48, 12, 5);
+      const px = lr.x + lr.w / 2 - (LOGISTICS_MAX_LEVEL * (pipW + 3)) / 2 + i * (pipW + 3);
+      ctx.fillStyle = i < state.logisticsLevel ? SCENE.bond : 'rgba(70, 78, 68, 0.9)';
+      ctx.beginPath();
+      ctx.roundRect(px, lr.y + lr.h * 0.46, pipW, 5 * scale, 2);
+      ctx.fill();
     }
-    ctx.font = `700 13px ${FONT}`;
-    ctx.fillStyle = maxed ? SCENE.hudDim : canBuy ? SCENE.bond : SCENE.enemyHp;
+    ctx.font = `700 ${Math.round(12 * scale)}px ${FONT}`;
+    ctx.fillStyle = maxed ? SCENE.hudDim : canBuy ? SCENE.bond : '#e8b0a4';
     ctx.fillText(
-      maxed ? 'MAX LEVEL' : `${state.logisticsCost} bonds  [U]`,
-      LOGISTICS_RECT.x + 14,
-      LOGISTICS_RECT.y + 74,
+      maxed ? 'MAX LEVEL' : `L${state.logisticsLevel} · ${state.logisticsCost} bonds`,
+      lr.x + lr.w / 2,
+      lr.y + lr.h - 10 * scale,
     );
 
-    // Battlefield readout.
-    ctx.fillStyle = 'rgba(16, 20, 17, 0.9)';
-    ctx.beginPath();
-    ctx.roundRect(READOUT_RECT.x, READOUT_RECT.y, READOUT_RECT.w, READOUT_RECT.h, 8);
-    ctx.fill();
-    ctx.strokeStyle = SCENE.hudLine;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    ctx.font = `600 10px ${FONT}`;
-    ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText('ENEMY', READOUT_RECT.x + 14, READOUT_RECT.y + 18);
-    ctx.font = `700 15px ${FONT}`;
-    ctx.fillStyle = SCENE.enemyHp;
-    ctx.fillText(`${state.enemyUnits} units`, READOUT_RECT.x + 14, READOUT_RECT.y + 38);
-    ctx.font = `500 10.5px ${FONT}`;
-    ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText(`depot ${Math.floor(state.enemySupplies)}`, READOUT_RECT.x + 14, READOUT_RECT.y + 54);
-
-    // Frontline indicator: where the weight of the battle currently sits.
-    const front = this.frontLineFraction(state);
-    const barX = READOUT_RECT.x + 14;
-    const frontBarY = READOUT_RECT.y + 64;
-    const barW = READOUT_RECT.w - 28;
-    ctx.fillStyle = 'rgba(8, 10, 8, 0.8)';
-    ctx.fillRect(barX, frontBarY, barW, 8);
-    ctx.fillStyle = SCENE.hudDim;
-    ctx.fillRect(barX + barW * 0.5 - 0.5, frontBarY - 2, 1, 12);
-    ctx.fillStyle = SCENE.playerHp;
-    ctx.fillRect(barX + barW * 0.5, frontBarY + 2, Math.max(0, (front - 0.5) * barW), 4);
-    ctx.fillStyle = SCENE.enemyHp;
-    ctx.fillRect(barX + barW * front, frontBarY + 2, Math.max(0, (0.5 - front) * barW), 4);
-    ctx.fillStyle = SCENE.hud;
-    ctx.fillRect(barX + barW * front - 1, frontBarY - 1, 2, 10);
-    ctx.font = `500 10px ${FONT}`;
-    ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText('front line', barX, frontBarY + 22);
+    // Recenter control sits above the logistics card.
+    this.drawIconButton(ctx, layout.recenter, hud.following ? '◎' : '➤', layout);
+    ctx.textAlign = 'left';
   }
 
-  /** One line telling the player what this sector wants and what it is doing. */
-  private situationText(state: TugState): string {
+  /** Keyboard hints: desktop only — never on a touch device. */
+  private drawKeyboardHints(
+    ctx: CanvasRenderingContext2D,
+    state: TugState,
+    layout: HudLayout,
+    hud: BattleHudInfo,
+  ): void {
+    if (hud.touch) return;
+    ctx.save();
+    ctx.font = `600 ${Math.round(9.5 * layout.scale)}px ${FONT}`;
+    ctx.fillStyle = 'rgba(206, 220, 200, 0.55)';
+    ctx.fillText(
+      '1-4 deploy · U boost · P pause · drag to pan · ESC back to base',
+      layout.cssWidth / 2,
+      layout.cssHeight - layout.dockHeight - Math.round(6 * layout.scale),
+    );
+    ctx.textAlign = 'center';
+    ctx.fillText(
+      `${state.playerUnits}/${MAX_UNITS_PER_SIDE} on the line · ${state.enemyUnits} enemy`,
+      layout.cssWidth / 2,
+      layout.cssHeight - layout.dockHeight - Math.round(18 * layout.scale),
+    );
+    ctx.restore();
+  }
+
+  private objectiveText(state: TugState): string {
     const objective =
       state.missionType === 'survive_timer'
         ? 'HOLD THE LINE'
@@ -645,86 +595,62 @@ export class BattleRenderer {
           : 'DESTROY THE STRONGPOINT';
     const rules = environmentRules(state.environment);
     const weather = rules.id === 'standard' ? '' : ` · ${rules.label.toUpperCase()}`;
-    const supplies =
-      Math.abs(state.supplyRate - 2) > 0.001 ? ` · SUPPLIES +${state.supplyRate.toFixed(1)}/s` : '';
-    return `${objective}${weather}${supplies}`;
+    return `${objective}${weather}`;
   }
 
-  private unitBlurb(kind: UnitKind): string {
-    // Kept short: these sit in a 148 px slot next to the unit portrait.
-    switch (kind) {
-      case 'rifleman':
-        return 'long range';
-      case 'smg':
-        return 'fast, close-in';
-      case 'mg':
-        return 'digs in';
-      case 'tank':
-        return 'armour, blast';
-    }
-  }
-
-  /** 0 = enemy strongpoint under pressure, 1 = player base under pressure. */
-  private frontLineFraction(state: TugState): number {
-    let sum = 0;
-    let count = 0;
-    for (const unit of state.units) {
-      sum += unit.x;
-      count += 1;
-    }
-    if (count === 0) return 0.5;
-    const average = sum / count;
-    return Math.max(0, Math.min(1, average / VIEW_WIDTH));
-  }
-
-  /**
-   * A red pulse at the screen edge while the player's own base is being hit —
-   * the one piece of feedback that stops a losing battle being noticed late.
-   */
-  private drawBaseAlert(ctx: CanvasRenderingContext2D, state: TugState): void {
+  /** A red pulse at the screen edge while the player's own base is being hit. */
+  private drawBaseAlert(
+    ctx: CanvasRenderingContext2D,
+    state: TugState,
+    cssWidth: number,
+    cssHeight: number,
+  ): void {
     const hit = state.playerBase.hit;
     if (hit <= 0) return;
-    const strength = Math.min(1, hit / 0.35) * 0.55;
+    const strength = Math.min(1, hit / 0.35) * 0.5;
     const gradient = ctx.createRadialGradient(
-      VIEW_WIDTH / 2,
-      VIEW_HEIGHT / 2,
-      VIEW_WIDTH * 0.32,
-      VIEW_WIDTH / 2,
-      VIEW_HEIGHT / 2,
-      VIEW_WIDTH * 0.72,
+      cssWidth / 2,
+      cssHeight / 2,
+      Math.min(cssWidth, cssHeight) * 0.3,
+      cssWidth / 2,
+      cssHeight / 2,
+      Math.max(cssWidth, cssHeight) * 0.72,
     );
     gradient.addColorStop(0, 'rgba(180, 40, 30, 0)');
     gradient.addColorStop(1, `rgba(196, 52, 38, ${strength.toFixed(3)})`);
     ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
+    ctx.fillRect(0, 0, cssWidth, cssHeight);
   }
 
-  private drawResultBanner(ctx: CanvasRenderingContext2D, state: TugState): void {
+  private drawResultBanner(
+    ctx: CanvasRenderingContext2D,
+    state: TugState,
+    layout: HudLayout,
+  ): void {
     const won = state.status === 'victory';
+    const scale = layout.scale;
     ctx.save();
-    const gradient = ctx.createLinearGradient(0, 0, 0, VIEW_HEIGHT);
-    gradient.addColorStop(0, 'rgba(6, 8, 6, 0.1)');
-    gradient.addColorStop(0.5, 'rgba(6, 8, 6, 0.55)');
-    gradient.addColorStop(1, 'rgba(6, 8, 6, 0.1)');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
-
     ctx.textAlign = 'center';
-    ctx.font = `700 46px ${FONT}`;
+    ctx.fillStyle = 'rgba(6, 8, 6, 0.55)';
+    const bannerH = Math.round(84 * scale);
+    const y = layout.cssHeight * 0.3;
+    ctx.fillRect(0, y, layout.cssWidth, bannerH);
+    ctx.font = `700 ${Math.round(34 * scale)}px ${FONT}`;
     ctx.fillStyle = won ? SCENE.playerHp : SCENE.enemyHp;
-    ctx.fillText(won ? 'VICTORY' : 'DEFEAT', VIEW_WIDTH / 2, 150);
-    ctx.font = `600 14px ${FONT}`;
+    ctx.fillText(won ? 'VICTORY' : 'DEFEAT', layout.cssWidth / 2, y + bannerH * 0.52);
+    ctx.font = `600 ${Math.round(11 * scale)}px ${FONT}`;
     ctx.fillStyle = SCENE.hud;
     ctx.fillText(
       won
-        ? `${state.enemyBase.side === 'enemy' ? 'Strongpoint' : 'Base'} destroyed — sector cleared`
+        ? 'The strongpoint is down — sector cleared'
         : state.lossReason === 'time-expired'
-          ? 'Time expired with the strongpoint still standing'
+          ? 'Time expired'
           : 'Your base has fallen',
-      VIEW_WIDTH / 2,
-      178,
+      layout.cssWidth / 2,
+      y + bannerH * 0.82,
     );
-    ctx.textAlign = 'left';
     ctx.restore();
+    ctx.textAlign = 'left';
   }
 }
+

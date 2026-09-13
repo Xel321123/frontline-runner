@@ -1,34 +1,69 @@
 /**
- * Effects drawing — drop shadows, muzzle flashes, and the particle system.
+ * Effects — muzzle flashes, tracers, impacts and debris.
  *
  * The particles themselves are simulation data (`state.particles`); this module
- * only decides how each kind looks. Every draw is a pure function of the state
- * it is handed, so nothing here needs to remember anything between frames.
+ * only decides how each kind looks. Two things matter at mobile zoom: rounds
+ * have to read as *fire* (a luminous tracer with a short trail rather than a
+ * dot), and hits have to read as *impact* (sparks and a dirt puff, not a
+ * disappearing pixel).
  */
 
-import type { Particle } from '../game/tugTypes';
-import { SCENE } from './palette';
+import type { Particle, Projectile } from '../game/tugTypes';
+import { GROUND_Y } from '../game/constants';
 
-/** Soft oval drop-shadow under a figure or vehicle. */
-export function drawShadow(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  groundY: number,
-  width: number,
-  alpha = 0.32,
-): void {
+/** How much trail a tracer carries, as a fraction of a second of travel. */
+const TRACER_TRAIL = 0.05;
+
+/** Bright tracer: a warm glow line with a short fading tail and a hot core. */
+export function drawTracer(ctx: CanvasRenderingContext2D, shot: Projectile): void {
+  const tailX = shot.x - shot.vx * TRACER_TRAIL;
+  const tailY = shot.y - shot.vy * TRACER_TRAIL;
+
   ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = '#0a0c0a';
+  ctx.lineCap = 'round';
+  // Outer glow.
+  ctx.strokeStyle = 'rgba(255, 198, 92, 0.35)';
+  ctx.lineWidth = 3.4;
   ctx.beginPath();
-  ctx.ellipse(x, groundY + 2, width * 0.5, Math.max(2, width * 0.16), 0, 0, Math.PI * 2);
+  ctx.moveTo(tailX, tailY);
+  ctx.lineTo(shot.x, shot.y);
+  ctx.stroke();
+  // Hot core.
+  ctx.strokeStyle = 'rgba(255, 246, 210, 0.95)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(tailX, tailY);
+  ctx.lineTo(shot.x, shot.y);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255, 252, 236, 1)';
+  ctx.beginPath();
+  ctx.arc(shot.x, shot.y, 1.7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** A shell in flight: a dark body with a tracer-lit tail and a faint smoke trail. */
+export function drawShell(ctx: CanvasRenderingContext2D, shot: Projectile): void {
+  const tailX = shot.x - shot.vx * 0.035;
+  const tailY = shot.y - shot.vy * 0.035;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(240, 190, 120, 0.3)';
+  ctx.lineWidth = 4.4;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(tailX, tailY);
+  ctx.lineTo(shot.x, shot.y);
+  ctx.stroke();
+  ctx.fillStyle = '#2b2925';
+  ctx.beginPath();
+  ctx.ellipse(shot.x, shot.y, 3.2, 2.2, Math.atan2(shot.vy, shot.vx), 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
 
 /**
- * Muzzle flash: a bright core with two side petals, scaled by how long ago the
- * shot happened so it pops and vanishes in ~70 ms.
+ * Muzzle flash: a star of spikes plus a brief smoke puff at the muzzle, drawn
+ * at the barrel's exit rather than the unit's centre.
  */
 export function drawMuzzleFlash(
   ctx: CanvasRenderingContext2D,
@@ -36,181 +71,157 @@ export function drawMuzzleFlash(
   y: number,
   facing: 1 | -1,
   strength: number,
+  time: number,
 ): void {
   if (strength <= 0) return;
-  const scale = 0.6 + strength * 0.9;
+  const power = Math.min(1, strength);
+  const length = (10 + power * 20) * FIGURE_REF;
   ctx.save();
   ctx.translate(x, y);
-  ctx.scale(facing * scale, scale);
-  ctx.globalAlpha = Math.min(1, strength * 1.4);
-
-  ctx.fillStyle = '#fff4c4';
+  ctx.scale(facing, 1);
+  ctx.fillStyle = `rgba(255, 232, 168, ${0.85 * power})`;
   ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(16, -5);
-  ctx.lineTo(22, 0);
-  ctx.lineTo(16, 5);
+  ctx.moveTo(0, -3.4 * power);
+  ctx.lineTo(length, -1.2 * power);
+  ctx.lineTo(length * 1.25, 0);
+  ctx.lineTo(length, 1.4 * power);
+  ctx.lineTo(0, 3.6 * power);
   ctx.closePath();
   ctx.fill();
-
-  ctx.fillStyle = 'rgba(255, 194, 92, 0.85)';
+  ctx.fillStyle = `rgba(255, 252, 226, ${0.95 * power})`;
   ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(11, -9);
-  ctx.lineTo(14, 0);
-  ctx.lineTo(11, 9);
+  ctx.moveTo(0, -1.8 * power);
+  ctx.lineTo(length * 0.6, 0);
+  ctx.lineTo(0, 1.9 * power);
   ctx.closePath();
   ctx.fill();
-
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-  ctx.beginPath();
-  ctx.arc(3, 0, 2.6, 0, Math.PI * 2);
-  ctx.fill();
+  // Propellant smoke, drifting up and forward.
+  ctx.fillStyle = `rgba(180, 176, 166, ${0.3 * power})`;
+  for (let i = 0; i < 3; i += 1) {
+    const t = (time * 3 + i * 0.3) % 1;
+    ctx.beginPath();
+    ctx.arc(length * 0.4 + t * 10, -t * 9, (2 + t * 5) * FIGURE_REF, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.restore();
 }
 
-/** A puff of propellant smoke hanging at the muzzle after a shot. */
-export function drawMuzzleSmoke(
+/** Matches the figure scale so effects stay in proportion to the troops. */
+const FIGURE_REF = 1.3;
+
+export function drawParticle(ctx: CanvasRenderingContext2D, particle: Particle): void {
+  const life = particle.maxLife > 0 ? particle.life / particle.maxLife : 0;
+  if (life <= 0) return;
+  const scale = FIGURE_REF;
+
+  switch (particle.kind) {
+    case 'spark': {
+      // A hot streak along its direction of travel.
+      const len = 5 + 7 * life;
+      const angle = Math.atan2(particle.vy, particle.vx);
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, life * 1.6);
+      ctx.strokeStyle = 'rgba(255, 226, 150, 0.95)';
+      ctx.lineWidth = 1.5 * scale;
+      ctx.beginPath();
+      ctx.moveTo(particle.x, particle.y);
+      ctx.lineTo(particle.x - Math.cos(angle) * len * scale, particle.y - Math.sin(angle) * len * scale);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255, 252, 232, 1)';
+      ctx.beginPath();
+      ctx.arc(particle.x, particle.y, 1.4 * scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      break;
+    }
+    case 'dust': {
+      // Dirt kicked up on impact.
+      ctx.save();
+      ctx.globalAlpha = Math.min(0.75, life * 0.9);
+      ctx.fillStyle = 'rgba(124, 104, 74, 0.9)';
+      const radius = (3 + (1 - life) * 9) * scale;
+      ctx.beginPath();
+      ctx.ellipse(particle.x, particle.y, radius, radius * 0.72, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      break;
+    }
+    case 'smoke': {
+      ctx.save();
+      ctx.globalAlpha = Math.min(0.6, life * 0.7);
+      ctx.fillStyle = 'rgba(58, 56, 52, 0.85)';
+      const radius = (5 + (1 - life) * 20) * scale;
+      ctx.beginPath();
+      ctx.arc(particle.x, particle.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      break;
+    }
+    case 'casing': {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, life * 1.4);
+      ctx.translate(particle.x, particle.y);
+      ctx.rotate(particle.life * 14);
+      ctx.fillStyle = '#c9a54a';
+      ctx.fillRect(-1.1 * scale, -2 * scale, 2.2 * scale, 4 * scale);
+      ctx.fillStyle = '#e8d48a';
+      ctx.fillRect(-1.1 * scale, -2 * scale, 1 * scale, 4 * scale);
+      ctx.restore();
+      break;
+    }
+    case 'debris': {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, life * 1.3);
+      ctx.translate(particle.x, particle.y);
+      ctx.rotate(particle.life * 9);
+      ctx.fillStyle = '#3c382f';
+      ctx.fillRect(-1.8 * scale, -1.8 * scale, 3.6 * scale, 3.6 * scale);
+      ctx.restore();
+      break;
+    }
+    case 'blood': {
+      ctx.save();
+      ctx.globalAlpha = Math.min(0.5, life * 0.6);
+      ctx.fillStyle = 'rgba(96, 32, 28, 0.85)';
+      ctx.beginPath();
+      ctx.arc(particle.x, particle.y, (2 + (1 - life) * 3) * scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      break;
+    }
+    case 'bond': {
+      // A war-bond token spinning down: readable as currency, not confetti.
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, life * 1.5);
+      ctx.translate(particle.x, particle.y);
+      const squash = Math.abs(Math.cos(particle.life * 9));
+      ctx.fillStyle = '#c9a54a';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 3.6 * scale * (0.35 + squash * 0.65), 3.6 * scale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255, 244, 200, 0.9)';
+      ctx.beginPath();
+      ctx.ellipse(-0.8 * scale, -0.8 * scale, 1.5 * scale, 1.5 * scale, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      break;
+    }
+  }
+}
+
+/** Ring of dirt and debris where a shell lands. */
+export function drawBlastScorch(
   ctx: CanvasRenderingContext2D,
   x: number,
-  y: number,
-  facing: 1 | -1,
-  strength: number,
+  radius: number,
+  alpha: number,
 ): void {
-  if (strength <= 0) return;
+  if (alpha <= 0) return;
   ctx.save();
-  ctx.globalAlpha = 0.3 * strength;
-  ctx.fillStyle = '#b9b3a4';
+  ctx.globalAlpha = Math.min(0.5, alpha);
+  ctx.fillStyle = '#16140f';
   ctx.beginPath();
-  ctx.ellipse(x + facing * 12, y - 2, 10 * strength, 6 * strength, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, GROUND_Y, radius * 0.8, radius * 0.2, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
-}
-
-function drawSpark(ctx: CanvasRenderingContext2D, particle: Particle): void {
-  const life = particle.life / particle.maxLife;
-  const length = 4 + particle.size * 3 * life;
-  const speed = Math.hypot(particle.vx, particle.vy) || 1;
-  const nx = particle.vx / speed;
-  const ny = particle.vy / speed;
-  ctx.globalAlpha = Math.min(1, life * 1.6);
-  ctx.strokeStyle = SCENE.spark;
-  ctx.lineWidth = particle.size * 0.9;
-  ctx.beginPath();
-  ctx.moveTo(particle.x, particle.y);
-  ctx.lineTo(particle.x - nx * length, particle.y - ny * length);
-  ctx.stroke();
-}
-
-function drawDust(ctx: CanvasRenderingContext2D, particle: Particle): void {
-  const life = particle.life / particle.maxLife;
-  ctx.globalAlpha = 0.5 * life;
-  ctx.fillStyle = '#8d8264';
-  ctx.beginPath();
-  ctx.arc(particle.x, particle.y, particle.size * (1.4 - life * 0.4), 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawSmoke(ctx: CanvasRenderingContext2D, particle: Particle): void {
-  const life = particle.life / particle.maxLife;
-  ctx.globalAlpha = 0.34 * Math.min(1, life * 1.5);
-  ctx.fillStyle = life > 0.6 ? '#6f6a60' : '#4d4a44';
-  ctx.beginPath();
-  ctx.arc(particle.x, particle.y, particle.size * (1.8 - life * 0.8), 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawCasing(ctx: CanvasRenderingContext2D, particle: Particle): void {
-  ctx.save();
-  ctx.globalAlpha = Math.min(1, particle.life * 2.2);
-  ctx.translate(particle.x, particle.y);
-  ctx.rotate(particle.spin * (1 - particle.life));
-  ctx.fillStyle = SCENE.brass;
-  ctx.fillRect(-2, -1, 4, 2);
-  ctx.restore();
-}
-
-function drawDebris(ctx: CanvasRenderingContext2D, particle: Particle): void {
-  ctx.save();
-  ctx.globalAlpha = Math.min(1, particle.life * 2);
-  ctx.translate(particle.x, particle.y);
-  ctx.rotate(particle.spin * (1 - particle.life) * 2);
-  ctx.fillStyle = '#3b3529';
-  ctx.beginPath();
-  ctx.moveTo(-particle.size, -particle.size * 0.6);
-  ctx.lineTo(particle.size, -particle.size * 0.2);
-  ctx.lineTo(particle.size * 0.4, particle.size);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawBlood(ctx: CanvasRenderingContext2D, particle: Particle): void {
-  ctx.globalAlpha = 0.5 * (particle.life / particle.maxLife);
-  ctx.fillStyle = '#6d2a24';
-  ctx.beginPath();
-  ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-/** A dropped war-bond token: a spinning brass disc that glints as it falls. */
-function drawBond(ctx: CanvasRenderingContext2D, particle: Particle): void {
-  const life = particle.life / particle.maxLife;
-  const spin = Math.abs(Math.cos(particle.spin + (1 - life) * 6));
-  ctx.save();
-  ctx.globalAlpha = Math.min(1, life * 2.4);
-  ctx.translate(particle.x, particle.y);
-  ctx.fillStyle = SCENE.bond;
-  ctx.beginPath();
-  ctx.ellipse(0, 0, particle.size * (0.35 + spin * 0.65), particle.size, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#8a6f22';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  ctx.restore();
-}
-
-/** Draw one particle, dispatching on its kind. */
-export function drawParticle(ctx: CanvasRenderingContext2D, particle: Particle): void {
-  ctx.save();
-  switch (particle.kind) {
-    case 'spark':
-      drawSpark(ctx, particle);
-      break;
-    case 'dust':
-      drawDust(ctx, particle);
-      break;
-    case 'smoke':
-      drawSmoke(ctx, particle);
-      break;
-    case 'casing':
-      drawCasing(ctx, particle);
-      break;
-    case 'debris':
-      drawDebris(ctx, particle);
-      break;
-    case 'blood':
-      drawBlood(ctx, particle);
-      break;
-    case 'bond':
-      drawBond(ctx, particle);
-      break;
-  }
-  ctx.restore();
-}
-
-/**
- * Particles split into two passes: smoke hangs *behind* the troops, everything
- * else reads as being in front of them.
- */
-export function drawParticles(
-  ctx: CanvasRenderingContext2D,
-  particles: readonly Particle[],
-  pass: 'behind' | 'front',
-): void {
-  for (const particle of particles) {
-    const isSmoke = particle.kind === 'smoke';
-    if (pass === 'behind' ? !isSmoke : isSmoke) continue;
-    drawParticle(ctx, particle);
-  }
 }

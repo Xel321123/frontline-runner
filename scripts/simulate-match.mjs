@@ -19,6 +19,7 @@ const { TugSimulation, logisticsCost } = await import('../src/game/TugSimulation
 const { createMatchConfig } = await import('../src/game/match.ts');
 const { UNIT_STATS } = await import('../src/game/units.ts');
 const C = await import('../src/game/constants.ts');
+const ENEMY_BASE_X = C.ENEMY_BASE_X;
 const { ENVIRONMENTS, environmentRules } = await import('../src/game/environment.ts');
 const { incomingDamage } = await import('../src/game/damage.ts');
 const { createFeatureLayout, trenchAt } = await import('../src/game/features.ts');
@@ -113,14 +114,24 @@ const POLICIES = {
     const enemyArmour = state.units.filter(
       (unit) => unit.side === 'enemy' && unit.kind === 'tank',
     ).length;
+    // A chokepoint punishes slow units: an MG team occupies a bridge slot
+    // without advancing through it, so crossings are fought with riflemen.
+    const bridged = state.features.bridges.length > 0;
     if (state.missionType === 'survive_timer') {
       if (enemyArmour > 0 && state.supplies >= costOf(state, 'tank')) return deploy('tank');
-      if (state.enemyUnits >= 3 && state.supplies >= costOf(state, 'mg')) return deploy('mg');
+      if (state.enemyUnits >= 3 && !bridged && state.supplies >= costOf(state, 'mg')) {
+        return deploy('mg');
+      }
       return state.supplies >= costOf(state, 'rifleman') ? deploy('rifleman') : null;
     }
-    if (state.supplies >= costOf(state, 'tank') + 60) return deploy('tank');
+    // Nor does armour: a tank is the slowest thing on the field and a bridge
+    // span is the worst place to spend a slot on one.
+    if (!bridged && state.supplies >= costOf(state, 'tank') + 60) return deploy('tank');
     if (state.enemyUnits >= 3 && state.supplies >= costOf(state, 'mg')) return deploy('mg');
-    if (state.enemyUnits === 0 && state.supplies >= costOf(state, 'smg')) return deploy('smg');
+    // A crossing is fought at range: close-assault troops die in the gap.
+    if (!bridged && state.enemyUnits === 0 && state.supplies >= costOf(state, 'smg')) {
+      return deploy('smg');
+    }
     return state.supplies >= costOf(state, 'rifleman') ? deploy('rifleman') : null;
   },
 };
@@ -234,32 +245,54 @@ const upgrade = () => ({ deploy: null, buyLogistics: true });
   check('units march toward the enemy', moved.x > x0 + 20, `x ${x0.toFixed(1)} -> ${moved.x.toFixed(1)}`);
 }
 
-// 5. a unit stops at its engagement range instead of walking into the enemy
+// 5. a rifleman advances to its firing distance and then holds that line
 {
+  // Measured against the strongpoint with the enemy line still far away, so this
+  // asserts the rule itself rather than the fortunes of one soldier.
   const { sim } = simFor();
-  let sawEngage = false;
-  let worstDistance = 0;
-  let sawAdvance = false;
-  for (let i = 0; i < 60 * 40; i += 1) {
-    const needsUnit = !sim.state.units.some((u) => u.side === 'player');
-    sim.update(C.FIXED_DT, needsUnit ? deploy('rifleman') : NO_COMMAND);
-    const hostiles = sim.state.units.filter((u) => u.side === 'enemy');
-    for (const unit of sim.state.units) {
-      if (unit.side !== 'player' || unit.kind !== 'rifleman') continue;
-      if (unit.state === 'advance') sawAdvance = true;
-      if (unit.state !== 'engage' || hostiles.length === 0) continue;
-      sawEngage = true;
-      const nearest = Math.min(...hostiles.map((o) => Math.abs(o.x - unit.x)));
-      worstDistance = Math.max(worstDistance, nearest);
+  play(sim, 0.1, () => deploy('rifleman'));
+  const range = UNIT_STATS.rifleman.range;
+  let engagedAt = null;
+  let engagedDistance = null;
+  for (let i = 0; i < 60 * 60 && engagedAt === null; i += 1) {
+    sim.update(C.FIXED_DT, NO_COMMAND);
+    const unit = sim.state.units.find((u) => u.side === 'player' && u.kind === 'rifleman');
+    if (!unit || unit.state !== 'engage') continue;
+    // Whatever it switched to firing at — a hostile or the strongpoint — the
+    // rule is that it stopped because that thing was inside its range.
+    engagedAt = unit.x;
+    engagedDistance = Math.min(
+      Math.abs(ENEMY_BASE_X - unit.x),
+      ...sim.state.units
+        .filter((other) => other.side === 'enemy')
+        .map((other) => Math.abs(other.x - unit.x)),
+    );
+  }
+  check(
+    'a rifleman opens fire only once its target is inside range',
+    engagedDistance !== null && engagedDistance <= range + 45,
+    engagedDistance === null
+      ? 'never engaged at all'
+      : `first engaged at ${engagedDistance.toFixed(0)}px, range ${range}`,
+  );
+
+  // And it stays put: a unit that keeps creeping forward is not holding a line.
+  let crept = 0;
+  if (engagedAt !== null) {
+    let previous = engagedAt;
+    for (let i = 0; i < 40; i += 1) {
+      sim.update(C.FIXED_DT, NO_COMMAND);
+      const unit = sim.state.units.find((u) => u.side === 'player' && u.kind === 'rifleman');
+      if (!unit) break;
+      crept += Math.abs(unit.x - previous);
+      previous = unit.x;
     }
   }
-  check('the rifleman marched first', sawAdvance);
   check(
-    'a rifleman holds its fire line instead of closing',
-    sawEngage && worstDistance <= UNIT_STATS.rifleman.range * 1.15 + 40,
-    `nearest hostile ${worstDistance.toFixed(1)}px, range ${UNIT_STATS.rifleman.range}`,
+    'and it does not creep forward while firing',
+    engagedAt !== null && crept < 8,
+    `crept ${crept.toFixed(1)}px`,
   );
-  check('engaged units switch to the engage state', sawEngage, `sawEngage=${sawEngage}`);
 }
 
 // 6. a bolt-action rifleman fires at its documented rate
@@ -616,6 +649,56 @@ const upgrade = () => ({ deploy: null, buyLogistics: true });
       stateA.stats.kills === stateB.stats.kills,
     `${stateA.status}/${stateA.stats.kills} vs ${stateB.status}/${stateB.stats.kills}`,
   );
+}
+
+// 11. shell blasts throw infantry backwards, stagger them, and spare armour
+{
+  // A sector where the enemy holds a line of infantry, and we drive our own
+  // armour into it: the blasts have to visibly scatter the troops they catch.
+  const { sim } = simFor('allied-18', { health: 2, damage: 2, baseHp: 0 });
+  const previousX = new Map();
+  let sawPush = false;
+  let sawStagger = false;
+  let biggestShove = 0;
+  let tankShoved = false;
+  for (let i = 0; i < 60 * 160; i += 1) {
+    const s = sim.state;
+    const mine = s.units.filter((unit) => unit.side === 'player');
+    const tanks = mine.filter((unit) => unit.kind === 'tank').length;
+    // Hard-save for the first two tanks: an army that keeps buying the cheapest
+    // body never fields armour, which is exactly the trap this check fell into.
+    const saving = tanks < 2 && s.supplies < costOf(s, 'tank');
+    const command = saving
+      ? NO_COMMAND
+      : s.supplies >= costOf(s, 'tank') && tanks < 2
+        ? deploy('tank')
+        : s.supplies >= costOf(s, 'rifleman')
+          ? deploy('rifleman')
+          : NO_COMMAND;
+    sim.update(C.FIXED_DT, command);
+
+    for (const unit of sim.state.units) {
+      const before = previousX.get(unit.id);
+      if (before !== undefined && unit.kind !== 'tank') {
+        const advance = unit.side === 'player' ? 1 : -1;
+        if ((unit.x - before) * advance < -1.5) {
+          sawPush = true;
+          biggestShove = Math.max(biggestShove, Math.abs(unit.x - before));
+        }
+        if (unit.stagger > 0) sawStagger = true;
+      }
+      // Armour is heavy enough to sit through a blast.
+      if (before !== undefined && unit.kind === 'tank') {
+        const advance = unit.side === 'player' ? 1 : -1;
+        if ((unit.x - before) * advance < -1.5) tankShoved = true;
+      }
+      previousX.set(unit.id, unit.x);
+    }
+    if (sim.state.status !== 'running') break;
+  }
+  check('a shell blast throws infantry backwards', sawPush, `largest shove ${biggestShove.toFixed(1)}px`);
+  check('a shell blast staggers what it catches', sawStagger);
+  check('armour is not thrown by a blast', !tankShoved);
 }
 
 // ---------------------------------------------------------------- autopilots

@@ -50,7 +50,15 @@ export const ENEMY_BASE_HP_PER_TIER = 150;
 
 // --- enemy AI ---------------------------------------------------------------
 export const ENEMY_SUPPLY_BASE = 1.7;
+/**
+ * Enemy supplies per second gained per tier. Mid-war pressure stays close to the
+ * base rate; from tier 6 the enemy is given real throughput, because otherwise
+ * it can never bank the 140 supplies an armour push costs and the late-war
+ * sectors fight like 1941.
+ */
 export const ENEMY_SUPPLY_PER_TIER = 0.05;
+export const ENEMY_LATE_WAR_SUPPLY = 0.15;
+export const ENEMY_LATE_WAR_TIER = 6;
 /** Seconds between enemy deployments (jittered by the level seed). */
 export const ENEMY_DEPLOY_INTERVAL = 2.4;
 export const ENEMY_DEPLOY_JITTER = 1.4;
@@ -124,7 +132,7 @@ export const MINE_TRIGGER_RADIUS = 7;
 export const MINE_SPACING = 26;
 /** Breadth of a bridge span, and how many units of one side may hold it. */
 export const BRIDGE_WIDTH = 150;
-export const BRIDGE_CAPACITY_PER_SIDE = 3;
+export const BRIDGE_CAPACITY_PER_SIDE = 4;
 
 // --- suppression ------------------------------------------------------------
 export const SUPPRESS_TIME = 0.7;
@@ -141,7 +149,18 @@ export const PROJECTILE_MAX_LIFE = 3;
 export const PARTICLE_GRAVITY = 340;
 /** Hard cap so a long barrage cannot tank the frame rate. */
 export const PARTICLE_CAP = 700;
-export const CORPSE_LIFE = 2.6;
+/**
+ * A fallen figure stays on the field long enough to fall, then leaves a fading
+ * silhouette on the ground instead of popping out of existence.
+ */
+export const CORPSE_FALL_TIME = 0.5;
+export const CORPSE_LIFE = 9;
+/** World pixels a shell blast shoves nearby infantry back. */
+export const BLAST_KNOCKBACK = 30;
+/** Seconds a unit is staggered after being caught in a blast. */
+export const BLAST_STAGGER = 0.45;
+/** Preferred camera zoom; the viewport clamps it so no bars are ever needed. */
+export const CAMERA_ZOOM = 1.8;
 export const SHAKE_DECAY = 3.2;
 export const MUZZLE_FLASH_TIME = 0.07;
 export const RECOIL_TIME = 0.16;

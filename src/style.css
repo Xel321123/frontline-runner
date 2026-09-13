@@ -923,6 +923,96 @@ main {
   text-align: center;
 }
 
+/* ---- battle: the canvas is the screen ------------------------------------
+   While a battle runs there is no chrome at all: the canvas fills the viewport
+   edge to edge and every HUD element is drawn onto it, translucent, so nothing
+   steals vertical space from the battlefield. */
+
+#app.battle-active {
+  padding: 0;
+  height: 100%;
+}
+
+#app.battle-active .app {
+  height: 100%;
+  max-height: 100%;
+  padding: 0;
+  gap: 0;
+}
+
+#app.battle-active .bar,
+#app.battle-active .hint,
+#app.battle-active .play-hint,
+#app.battle-active #screen,
+#app.battle-active #diagnostics {
+  display: none;
+}
+
+#app.battle-active main {
+  display: block;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  gap: 0;
+}
+
+#app.battle-active #play {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  /* dvh covers the mobile URL-bar shuffle where it is supported. */
+  height: 100dvh;
+  display: block;
+  padding: 0;
+  margin: 0;
+}
+
+#app.battle-active #play[hidden] {
+  display: none;
+}
+
+#app.battle-active .stage-wrap {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #050706;
+}
+
+#app.battle-active .stage {
+  width: 100%;
+  height: 100%;
+}
+
+/* Touch devices get no keyboard hints: there is no keyboard. */
+@media (hover: none), (pointer: coarse) {
+  .play-hint,
+  .hint kbd,
+  .hint .kbd {
+    display: none;
+  }
+}
+
+/* While the player is dragging the battlefield, the page must not scroll,
+   rubber-band or double-tap-zoom underneath. */
+html,
+body {
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app.battle-active,
+#app.battle-active .stage {
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
 /* while a run is live, the menus step aside */
 
 body.playing .chip#btn-camp {

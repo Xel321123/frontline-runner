@@ -14,4 +14,4 @@ export type { GameStorageOptions, PurchaseResult, RunReport } from './Storage';
 export { SoundManager } from './SoundManager';
 export type { PlayOptions, SoundManagerOptions, SoundManagerState, SoundName } from './SoundManager';
 export { createBattleInput } from './Input';
-export type { BattleInput, BattleInputOptions, PointerState } from './Input';
+export type { BattleInput, BattleInputOptions, PointerSample } from './Input';

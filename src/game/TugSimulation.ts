@@ -44,6 +44,8 @@ import {
   BASE_HALF_WIDTH,
   BASE_SPAWN_OFFSET,
   BASE_X,
+  BLAST_KNOCKBACK,
+  BLAST_STAGGER,
   BULLET_SPEED,
   CORPSE_LIFE,
   ENEMY_ARMOUR_DELAY,
@@ -200,6 +202,9 @@ export class TugSimulation {
       time: this.timeValue,
       timeLeft: Math.max(0, this.timeLimit() - this.timeValue),
       missionType: this.config.missionType,
+      playerFaction: this.config.faction,
+      enemyFaction: this.config.enemyFaction,
+      tier: this.config.tier,
       environment: this.config.environment,
       searchlights: this.searchlightValue,
       features: this.layout,
@@ -334,6 +339,30 @@ export class TugSimulation {
       return;
     }
 
+    // Save for armour. An army that always spends on the cheapest body never
+    // fields a tank — which made the late-war sectors fight like 1941 — so while
+    // the sector wants armour and the enemy has less than its quota, it banks
+    // supplies instead of buying another rifleman.
+    const tankCost = this.unitCostFor('tank');
+    const wantsArmour =
+      armourUnlocked && this.config.enemyMix.some((entry) => entry.kind === 'tank');
+    // Only bank for armour while the line is manned, and never in a hold
+    // mission: there the clock is the enemy's weapon and it has to keep
+    // pressing rather than saving.
+    const lineHeld = this.countUnits('enemy') >= 3;
+    const keepsPressing = this.config.missionType !== 'survive_timer';
+    if (wantsArmour && lineHeld && keepsPressing) {
+      // One tank at a time: enough to make armour a real threat without
+      // starving the infantry line that protects it.
+      const tanks = this.unitsValue.filter(
+        (unit) => unit.side === 'enemy' && unit.kind === 'tank',
+      ).length;
+      if (tanks < 1 && this.enemySuppliesValue < tankCost) {
+        this.enemyDeployTimer = 0.7;
+        return;
+      }
+    }
+
     // Slight counter-bias: armour on the field pulls the enemy toward the
     // units that can actually hurt it.
     const playerTanks = this.unitsValue.filter(
@@ -382,6 +411,8 @@ export class TugSimulation {
       suppressed: 0,
       rangeJitter: this.rng.range(0.85, 1.15),
       illuminated: false,
+      stagger: 0,
+      shoved: 0,
       trenchCover: false,
       spawn: 0,
       facing,
@@ -512,6 +543,12 @@ export class TugSimulation {
       unit.recoil = Math.max(0, unit.recoil - dt / 0.16);
       unit.suppressed = Math.max(0, unit.suppressed - dt);
 
+      if (unit.stagger > 0) {
+        unit.stagger = Math.max(0, unit.stagger - dt);
+        unit.shoved = Math.max(0, unit.shoved - dt * 1.6);
+        continue;
+      }
+      unit.shoved = Math.max(0, unit.shoved - dt * 1.6);
       const target = this.findTarget(unit);
       // Sandstorms and the like cut the range at which anyone can engage.
       if (target && Math.abs(target - unit.x) <= this.unitRange(unit)) {
@@ -700,6 +737,22 @@ export class TugSimulation {
       if (distance > radius) continue;
       const falloff = 1 - 0.6 * (distance / radius);
       this.hitUnit(unit, shot.damage * falloff, 0);
+      // Armour shrugs off the shockwave; infantry gets thrown backwards —
+      // except on a bridge, where the parapet takes the push and a blast cannot
+      // sweep the attackers back off the span.
+      const onBridge = bridgeAt(this.layout, unit.x) !== null;
+      if (unit.kind !== 'tank' && !onBridge) {
+        // Everyone caught in the blast is thrown, including the ones it kills:
+        // an explosion that only moved the survivors would look wrong.
+        const push = BLAST_KNOCKBACK * falloff;
+        unit.x = Math.max(
+          BASE_X + BASE_SPAWN_OFFSET,
+          Math.min(ENEMY_BASE_X - BASE_SPAWN_OFFSET, unit.x + Math.sign(unit.x - shot.x || 1) * push),
+        );
+        unit.shoved = 1;
+        // Only the living are staggered by it.
+        if (unit.hp > 0) unit.stagger = Math.max(unit.stagger, BLAST_STAGGER * falloff);
+      }
     }
 
     if (atBase) {
@@ -738,6 +791,12 @@ export class TugSimulation {
       facing: unit.facing,
       life: CORPSE_LIFE,
       maxLife: CORPSE_LIFE,
+      // Bodies topple away from the enemy and the helmet is knocked off.
+      topple: unit.side === 'player' ? -1 : 1,
+      helmetX: unit.x,
+      helmetY: GROUND_Y - unitStats(unit.kind).height * 0.82,
+      helmetVx: (unit.side === 'player' ? -1 : 1) * this.rng.range(26, 48),
+      helmetVy: this.rng.range(-140, -96),
     });
     this.deathBurst(unit.x, unit.kind);
 

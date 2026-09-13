@@ -52,6 +52,10 @@ export interface Unit {
   rangeJitter: number;
   /** Caught in a searchlight beam: takes extra damage at night. */
   illuminated: boolean;
+  /** Blast stagger, seconds: cannot move or fire while it lasts. */
+  stagger: number;
+  /** How hard this unit was last shoved, for the lean in its animation. */
+  shoved: number;
   /** Holding a dugout: takes a fraction of incoming projectile damage. */
   trenchCover: boolean;
   /** Spawn scale-in animation, 0..1. */
@@ -114,6 +118,13 @@ export interface Corpse {
   facing: 1 | -1;
   life: number;
   maxLife: number;
+  /** Direction the body toppled in, so it falls away from the impact. */
+  topple: 1 | -1;
+  /** Helmet launched off on impact (drawn as its own little arc). */
+  helmetX: number;
+  helmetY: number;
+  helmetVx: number;
+  helmetVy: number;
 }
 
 /** Sandbags left behind by a dug-in MG, kept as scenery once it advances. */
@@ -199,6 +210,10 @@ export interface TugState {
   /** How this sector is won (affects what the HUD tells the player). */
   readonly missionType: MissionType;
   readonly environment: Environment;
+  readonly playerFaction: Faction;
+  readonly enemyFaction: Faction;
+  /** Campaign tier: drives late-war kit, such as the M1 helmet. */
+  readonly tier: number;
   /** Searchlight beam centres, empty unless it is a night battle. */
   readonly searchlights: readonly number[];
   /** Static terrain on the field, with live damage/occupancy state. */

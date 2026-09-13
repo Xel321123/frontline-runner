@@ -31,6 +31,8 @@ import {
   ASSAULT_BASE_HP_MULTIPLIER,
   ENEMY_BASE_HP_BASE,
   ENEMY_BASE_HP_PER_TIER,
+  ENEMY_LATE_WAR_SUPPLY,
+  ENEMY_LATE_WAR_TIER,
   ENEMY_SUPPLY_BASE,
   ENEMY_SUPPLY_PER_TIER,
   PLAYER_BASE_HP,
@@ -114,7 +116,11 @@ export function createMatchConfig(stage: StageDefinition, save: SaveData): Match
       SUPPLY_BASE_RATE * supplyRateMultiplier * attackerSupplyBonus * survivalSupplyBonus,
     // The enemy economy scales with the tier; the player out-scales it through
     // the in-match logistics upgrade instead.
-    enemySupplyRate: (ENEMY_SUPPLY_BASE + ENEMY_SUPPLY_PER_TIER * stage.tier) * enemySupplyBonus,
+    enemySupplyRate:
+      (ENEMY_SUPPLY_BASE +
+        ENEMY_SUPPLY_PER_TIER * stage.tier +
+        Math.max(0, stage.tier - ENEMY_LATE_WAR_TIER + 1) * ENEMY_LATE_WAR_SUPPLY) *
+      enemySupplyBonus,
     enemyDeployInterval:
       missionType === 'survive_timer' ? SURVIVE_ENEMY_DEPLOY_INTERVAL : ENEMY_DEPLOY_INTERVAL,
     damageMultiplier,

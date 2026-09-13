@@ -739,7 +739,7 @@ export const ALLIED_CAMPAIGN: readonly CampaignNode[] = [
     missionType: 'assault',
     environment: 'standard',
     features: ['bridge_chokepoint'],
-    supplyRateMultiplier: 1.35,
+    supplyRateMultiplier: 1.5,
     briefing:
       'Operation Market Garden dropped three airborne divisions in the Netherlands on 17 September 1944 to seize a chain of bridges ending at Arnhem. The British 1st Airborne held the north end of the Arnhem bridge for four days but could not be relieved, and the plan failed at the last bridge.',
   },
@@ -769,7 +769,7 @@ export const ALLIED_CAMPAIGN: readonly CampaignNode[] = [
     missionType: 'survive_timer',
     environment: 'snow',
     features: ['trenches', 'minefield'],
-    supplyRateMultiplier: 0.85,
+    supplyRateMultiplier: 1.1,
     briefing:
       'The 101st Airborne Division was encircled at the crossroads town of Bastogne on 20 December 1944 during the Ardennes offensive. Asked to surrender, its commander answered "Nuts", and the town held until the weather cleared and relief armour broke through on 26 December.',
   },
@@ -784,7 +784,7 @@ export const ALLIED_CAMPAIGN: readonly CampaignNode[] = [
     missionType: 'assault',
     environment: 'standard',
     features: ['bridge_chokepoint'],
-    supplyRateMultiplier: 1.2,
+    supplyRateMultiplier: 1.5,
     briefing:
       'On 7 March 1945 a US armoured task force found the Ludendorff railway bridge at Remagen still standing and crossed it under fire. The bridge collapsed ten days later, but five divisions had already passed over the Rhine.',
   },
@@ -1211,7 +1211,7 @@ export const AXIS_CAMPAIGN: readonly CampaignNode[] = [
     missionType: 'assault',
     environment: 'snow',
     features: ['minefield'],
-    supplyRateMultiplier: 1.4,
+    supplyRateMultiplier: 1.25,
     briefing:
       'The Ardennes offensive opened on 16 December 1944 through fog that grounded Allied aircraft and covered the approach routes. The advance was halted short of the Meuse by stubborn defence and by a shortage of fuel, the very problem the operation had been launched to solve.',
   },
@@ -1271,7 +1271,7 @@ export const AXIS_CAMPAIGN: readonly CampaignNode[] = [
     missionType: 'survive_timer',
     environment: 'mud',
     features: ['trenches'],
-    supplyRateMultiplier: 1.1,
+    supplyRateMultiplier: 1.3,
     briefing:
       'A German army group was encircled south-east of Berlin in April 1945 while the remnants of another army waited to the west. The breakout through the Halbe corridor cost tens of thousands of casualties and ran into rocket-launcher lines on the far side.',
   },

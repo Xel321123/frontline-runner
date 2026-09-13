@@ -23,11 +23,12 @@ import { UNIT_ORDER } from '../game/units';
 import type { CanvasSurface, OrientationLockResult } from '../platform/Display';
 import {
   createCanvasSurface,
+  enterFullscreen,
+  exitFullscreen,
   isLandscape,
-  requestFullscreen,
   tryLockLandscape,
 } from '../platform/Display';
-import { MatchSession, type BattleOutcome } from './Match';
+import { createMatchSession, prefersTouch, type BattleOutcome, type MatchSession } from './Match';
 import { mustFind, setHtml, show } from './dom';
 import {
   briefingHtml,
@@ -225,6 +226,15 @@ export async function startShell(root: HTMLElement): Promise<void> {
 
   // ------------------------------------------------------------------ battle
 
+  /**
+   * Battle presentation: full-bleed canvas with the HUD drawn on it. The shell
+   * only toggles a class so CSS can hide the menu chrome — no DOM panel is left
+   * eating vertical space while a battle is running.
+   */
+  function setBattleChrome(active: boolean): void {
+    root.classList.toggle('battle-active', active);
+  }
+
   function startBattle(stage: StageDefinition | undefined): void {
     const save = storage.snapshot();
     if (!stage || !save.faction || session) return;
@@ -233,32 +243,42 @@ export async function startShell(root: HTMLElement): Promise<void> {
       return;
     }
 
+    // Fullscreen has to be requested from inside the tap that started this, so
+    // it happens here rather than after the canvas is built.
+    void enterFullscreen();
     void unlockAudio();
+    setBattleChrome(true);
     modal = { kind: null };
     lastOutcome = null;
     surface = createCanvasSurface(stageEl);
-    session = new MatchSession({
+    session = createMatchSession({
       surface,
       storage,
       sound,
       faction: save.faction,
       stage,
+      situation: stageTagline(stage),
       onExit: () => exitBattle(),
-      onFinish: (outcome) => {
+      onFinish: (outcome: BattleOutcome) => {
         lastOutcome = outcome;
         modal = { kind: 'result' };
         saveNote = `last battle: ${outcome.status} at ${outcome.nodeName}`;
         render();
       },
     });
-    session.start();
     debugApi.session = session;
     hint = '';
     render();
-    say('1-4 or the deployment bar to field units · U boosts logistics · P pauses');
+    say(
+      prefersTouch()
+        ? 'tap a card to deploy · drag the field to pan'
+        : '1-4 or the deployment bar to field units · U boosts logistics · P pauses',
+    );
   }
 
   function teardownSession(): void {
+    setBattleChrome(false);
+    exitFullscreen();
     session?.dispose();
     session = null;
     debugApi.session = null;
@@ -402,7 +422,7 @@ export async function startShell(root: HTMLElement): Promise<void> {
   }
 
   async function requestLandscape(): Promise<void> {
-    if (!isLandscape()) await requestFullscreen(stageEl);
+    if (!isLandscape()) await enterFullscreen();
     orientationLock = await tryLockLandscape();
   }
 

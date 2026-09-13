@@ -1,66 +1,71 @@
-/** Which weapon signature a firing unit should sound like. */
-function shotSoundFor(kind: SimEvent['kind']): SoundName {
-  switch (kind) {
-    case 'rifleman':
-      return 'rifleShot';
-    case 'smg':
-      return 'smgShot';
-    case 'tank':
-      return 'shellFire';
-    default:
-      return 'mgShot';
-  }
-}
-
 /**
  * MatchSession — the battle's composition root.
  *
- * Owns the fixed-timestep loop, the deployment-bar input, the renderer and the
- * audio policy, and is the only place where the pure simulation meets the
- * browser. Progression is written back to the save file exactly once, when the
- * battle is decided.
+ * Owns the fixed-timestep loop, the camera, the deployment-bar input, the
+ * renderer and the audio policy, and is the only place where the pure
+ * simulation meets the browser.
+ *
+ * Camera behaviour is the mobile centrepiece: the view is zoomed in on the
+ * ground line and follows the fighting automatically, but a horizontal drag
+ * pans it — held for a moment so you can study a flank, then eased back to the
+ * action so you never lose the battle by looking away.
  */
 
-import type { StageDefinition } from '../core/progression';
-import type { Faction } from '../core/types';
-import type { GameStorage, SoundManager, SoundName } from '../engine';
-import { createBattleInput, type BattleInput, type PointerState } from '../engine/Input';
 import {
-  FIXED_DT,
-  MAX_FRAME_DT,
-  MAX_SUBSTEPS,
-  VIEW_HEIGHT,
-  VIEW_WIDTH,
-} from '../game/constants';
-import { logisticsAt, slotAt, kindForHotkey } from '../game/hud';
+  createBattleInput,
+  type BattleInput,
+} from '../engine/Input';
+import type { GameStorage, SoundManager, SoundName } from '../engine';
+import { nextStageId, type StageDefinition } from '../core/progression';
+import { CAMERA_ZOOM, GROUND_Y, VIEW_HEIGHT, VIEW_WIDTH } from '../game/constants';
+import {
+  computeHudLayout,
+  hitControl,
+  hitDeploy,
+  hitLogistics,
+  kindForHotkey,
+  type HudLayout,
+} from '../game/hud';
 import { createMatchConfig } from '../game/match';
-import { stageTagline } from '../game/stageInfo';
 import { TugSimulation } from '../game/TugSimulation';
 import type { MatchCommand, MatchStatus, SimEvent } from '../game/tugTypes';
 import type { UnitKind } from '../game/units';
 import type { CanvasSurface } from '../platform/Display';
-import { computeGameViewport } from '../platform/Viewport';
+import {
+  cameraAt,
+  createCamera,
+  type Camera,
+} from '../platform/Viewport';
 import { BattleRenderer } from '../render/BattleRenderer';
+
+/** How long a manual pan is held before the camera eases back to the action. */
+const PAN_HOLD_SECONDS = 4;
+/** World pixels/second the camera eases at. */
+const FOLLOW_RATE = 2.2;
 
 export interface BattleOutcome {
   readonly nodeId: string;
   readonly nodeName: string;
   readonly year: string;
-  readonly status: MatchStatus;
-  readonly lossReason: 'base-destroyed' | 'time-expired' | null;
-  /** Mission, weather and terrain, for the result panel's kicker. */
   readonly situation: string;
-  readonly durationSeconds: number;
+  readonly status: Exclude<MatchStatus, 'running'>;
+  readonly lossReason: string;
+  /** Bonds banked for taking the sector (0 on a defeat). */
   readonly bondsAwarded: number;
+  /** Bonds picked up from enemy losses, banked win or lose. */
   readonly bondsCollected: number;
   readonly unitsDeployed: number;
   readonly unitsLost: number;
   readonly enemyDestroyed: number;
+  readonly minesHit: number;
+  readonly enemyMinesHit: number;
   readonly logisticsBought: number;
   readonly playerBaseRemaining: number;
   readonly playerBaseMax: number;
   readonly enemyBaseRemaining: number;
   readonly enemyBaseMax: number;
+  readonly durationSeconds: number;
+  /** The node this victory opened, if any. */
   readonly unlockedStage: string | null;
 }
 
@@ -68,300 +73,385 @@ export interface MatchSessionOptions {
   readonly surface: CanvasSurface;
   readonly storage: GameStorage;
   readonly sound: SoundManager;
-  readonly faction: Faction;
+  readonly faction: 'allied' | 'axis';
   readonly stage: StageDefinition;
-  /** Called when the player leaves mid-battle (ESC) with no result screen. */
+  readonly situation: string;
+  /** Leave the battle without a result (back to the map). */
   readonly onExit: () => void;
-  /** Called once, the moment the battle is decided. */
-  readonly onFinish?: (outcome: BattleOutcome) => void;
+  /** Called exactly once, when the battle is decided. */
+  readonly onFinish: (outcome: BattleOutcome) => void;
+  /** Called when the pause state changes, so the shell can react. */
+  readonly onPauseChange?: (paused: boolean) => void;
 }
 
-const HALF_BAR = 0;
+export interface MatchSession {
+  readonly state: TugSimulation['state'];
+  readonly camera: Camera;
+  readonly layout: HudLayout;
+  readonly fps: number;
+  readonly paused: boolean;
+  setPaused(paused: boolean): void;
+  dispose(): void;
+}
 
-export class MatchSession {
-  private readonly options: MatchSessionOptions;
-  private readonly simulation: TugSimulation;
-  private readonly renderer = new BattleRenderer();
-  private readonly input: BattleInput;
+export function createMatchSession(options: MatchSessionOptions): MatchSession {
+  const { surface, storage, sound, faction, stage } = options;
+  const config = createMatchConfig(stage, storage.snapshot());
+  const simulation = new TugSimulation(config);
+  const renderer = new BattleRenderer();
 
-  private frameHandle: number | null = null;
-  private lastTime = 0;
-  private accumulator = 0;
-  private fpsValue = 60;
-  private paused = false;
-  private awarded = false;
-  private outcomeValue: BattleOutcome | null = null;
-  private readonly lastPlayed = new Map<SoundName, number>();
-  private now = 0;
+  const touch = prefersTouch();
+  let layout = computeHudLayout(surface.width, surface.height, touch);
+  let camera = createCamera(
+    surface.width,
+    surface.height,
+    VIEW_WIDTH,
+    VIEW_HEIGHT,
+    CAMERA_ZOOM,
+    GROUND_Y,
+  );
+  let followX = simulation.state.focusX;
+  let panX = 0;
+  let panHold = 0;
+  let paused = false;
+  let disposed = false;
+  let awarded = false;
+  let frame = 0;
+  let last = performance.now();
+  let accumulator = 0;
+  let fpsValue = 60;
+  const lastPlayed = new Map<SoundName, number>();
 
-  constructor(options: MatchSessionOptions) {
-    this.options = options;
-    const config = createMatchConfig(options.stage, options.storage.snapshot());
-    this.simulation = new TugSimulation(config);
+  const input: BattleInput = createBattleInput({
+    element: surface.canvas,
+    onFirstGesture: () => {
+      void unlockAudio();
+    },
+  });
 
-    this.input = createBattleInput({
-      element: options.surface.canvas,
-      getViewport: () =>
-        computeGameViewport(
-          options.surface.width,
-          options.surface.height,
-          VIEW_WIDTH,
-          VIEW_HEIGHT,
-        ),
-    });
-  }
-
-  // ------------------------------------------------------------------ public
-
-  get fps(): number {
-    return this.fpsValue;
-  }
-
-  get state() {
-    return this.simulation.state;
-  }
-
-  get outcome(): BattleOutcome | null {
-    return this.outcomeValue;
-  }
-
-  get isPaused(): boolean {
-    return this.paused;
-  }
-
-  start(): void {
-    if (this.frameHandle !== null) return;
-    this.lastTime = performance.now();
-    const frame = (now: number) => {
-      this.frameHandle = requestAnimationFrame(frame);
-      this.tick(now);
-    };
-    this.frameHandle = requestAnimationFrame(frame);
-    // Draw one frame immediately so the canvas is not blank before the first rAF.
-    this.render();
-  }
-
-  dispose(): void {
-    if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle);
-    this.frameHandle = null;
-    this.input.dispose();
-  }
-
-  // ------------------------------------------------------------------- frame
-
-  private tick(now: number): void {
-    const frameSeconds = Math.min(MAX_FRAME_DT, Math.max(0, (now - this.lastTime) / 1000));
-    this.lastTime = now;
-    if (frameSeconds > 0) {
-      this.fpsValue = this.fpsValue * 0.9 + (1 / frameSeconds) * 0.1;
-    }
-    this.now += frameSeconds;
-
-    const actions = this.collectIntent();
-    if (actions.togglePause) this.paused = !this.paused;
-
-    if (!this.paused) {
-      this.accumulator += frameSeconds;
-      let steps = 0;
-      while (this.accumulator >= FIXED_DT && steps < MAX_SUBSTEPS) {
-        this.simulation.update(FIXED_DT, actions.command);
-        this.accumulator -= FIXED_DT;
-        steps += 1;
-      }
-      if (steps >= MAX_SUBSTEPS) this.accumulator = 0;
-      this.handleEvents(this.simulation.takeEvents());
-      this.settle();
-    }
-
-    this.render();
-  }
-
-  /** Turn this frame's presses and keys into a single simulation command. */
-  private collectIntent(): { command: MatchCommand; togglePause: boolean } {
-    let deployKind: UnitKind | null = null;
-    let buyLogistics = false;
-    let togglePause = false;
-
-    for (const key of this.input.takeKeys()) {
-      if (key === 'p') togglePause = true;
-      else if (key === 'u') buyLogistics = true;
-      else {
-        const kind = kindForHotkey(key);
-        if (kind) deployKind = kind;
-      }
-    }
-
-    const press: PointerState | null = this.input.takePress();
-    if (press) {
-      // Ignore presses outside the logical area (the letterbox bars).
-      const inside =
-        press.x >= 0 && press.x <= VIEW_WIDTH && press.y >= 0 && press.y <= VIEW_HEIGHT;
-      if (inside) {
-        const slot = slotAt(press.x, press.y);
-        if (slot) deployKind = slot;
-        else if (logisticsAt(press.x, press.y)) buyLogistics = true;
-      }
-    }
-
-    return { command: { deploy: deployKind, buyLogistics }, togglePause };
-  }
-
-  private render(): void {
-    const { surface } = this.options;
-    this.renderer.draw(
-      surface.ctx,
-      this.simulation.state,
-      surface.width,
-      surface.height,
-      surface.pixelRatio,
-      {
-        nodeName: this.options.stage.name,
-        year: this.options.stage.year,
-        strongpoint: this.options.stage.bossName,
-        faction: this.options.faction,
-        enemyFaction: this.options.faction === 'allied' ? 'axis' : 'allied',
-        tier: this.options.stage.tier,
-        fps: this.fpsValue,
-      },
-    );
-    if (this.paused) {
-      const ctx = surface.ctx;
-      ctx.save();
-      ctx.setTransform(surface.pixelRatio, 0, 0, surface.pixelRatio, 0, 0);
-      ctx.fillStyle = 'rgba(5, 7, 6, 0.55)';
-      ctx.fillRect(0, 0, surface.width, surface.height);
-      ctx.fillStyle = '#e6ecdd';
-      ctx.font = '700 22px ui-monospace, monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('PAUSED — press P', surface.width / 2, surface.height / 2);
-      ctx.textAlign = 'left';
-      ctx.restore();
+  async function unlockAudio(): Promise<void> {
+    if (sound.state === 'running') return;
+    try {
+      await sound.unlock();
+    } catch {
+      /* audio is optional; the game never blocks on it */
     }
   }
 
-  // ------------------------------------------------------------------- audio
-
-  private play(name: SoundName, minGapMs = 45, volume = 0.6): void {
-    const last = this.lastPlayed.get(name) ?? -Infinity;
-    if (this.now * 1000 - last < minGapMs) return;
-    this.lastPlayed.set(name, this.now * 1000);
-    this.options.sound.play(name, { volume });
+  function play(name: SoundName, minGapMs: number, volume: number): void {
+    const now = performance.now();
+    const previous = lastPlayed.get(name) ?? -Infinity;
+    if (now - previous < minGapMs) return;
+    lastPlayed.set(name, now);
+    sound.play(name, { volume });
   }
 
-  /**
-   * Sim events → the soundboard. Each weapon keeps its own signature, so the
-   * player can hear the difference between a rifle line and an MG nest without
-   * looking at the field. Volume and throttling live here; the synth itself
-   * owns the per-sound voice budget.
-   */
-  private handleEvents(events: readonly SimEvent[]): void {
+  function shotSoundFor(kind: SimEvent['kind']): SoundName {
+    switch (kind) {
+      case 'rifleman':
+        return 'rifleShot';
+      case 'smg':
+        return 'smgShot';
+      case 'tank':
+        return 'shellFire';
+      default:
+        return 'mgShot';
+    }
+  }
+
+  /** Sim events → soundboard. Each weapon keeps its own signature. */
+  function handleEvents(events: readonly SimEvent[]): void {
     for (const event of events) {
       switch (event.type) {
         case 'deploy':
-          this.play('deploy', 0, 0.5);
+          play('deploy', 0, 0.5);
           break;
         case 'enemyDeploy':
-          this.play('uiBack', 400, 0.18);
+          play('uiBack', 400, 0.16);
           break;
         case 'shot':
-          this.play(shotSoundFor(event.kind), 0, 0.3);
+          play(shotSoundFor(event.kind), 0, 0.3);
           break;
         case 'shell':
-          this.play('shellFire', 0, 0.55);
+          play('shellFire', 0, 0.55);
           break;
         case 'impact':
-          // A round ringing off armour is a ricochet; dirt is a dull tick.
-          this.play(event.metal ? 'ricochet' : 'impact', 0, event.metal ? 0.3 : 0.2);
+          play(event.metal ? 'ricochet' : 'impact', 0, event.metal ? 0.3 : 0.2);
           break;
         case 'explosion':
-          this.play('explosion', 0, 0.6);
+          play('explosion', 0, 0.6);
           break;
         case 'mineBlast':
-          this.play('mineBlast', 0, 0.7);
+          play('mineBlast', 0, 0.7);
           break;
         case 'unitDown':
-          this.play('impact', 60, 0.4);
+          play('impact', 60, 0.4);
           break;
         case 'playerUnitDown':
-          this.play('uiBack', 320, 0.28);
+          play('uiBack', 320, 0.26);
           break;
         case 'trenchOverrun':
-          this.play('uiBack', 200, 0.3);
+          play('uiBack', 200, 0.3);
           break;
         case 'baseHit':
-          this.play('impact', 120, 0.36);
+          play('impact', 120, 0.36);
           break;
         case 'baseDestroyed':
-          this.play('explosion', 0, 0.85);
+          play('explosion', 0, 0.85);
           break;
         case 'logisticsUpgrade':
-          this.play('upgrade', 0, 0.6);
+          play('upgrade', 0, 0.6);
           break;
         case 'victory':
-          this.play('explosion', 0, 0.75);
+          play('explosion', 0, 0.75);
           break;
         case 'defeat':
-          this.play('uiBack', 0, 0.5);
+          play('uiBack', 0, 0.5);
           break;
       }
     }
   }
 
-  // -------------------------------------------------------------- progression
+  /** Taps are HUD presses; the canvas is the only surface, so all of it lands. */
+  function handleTap(x: number, y: number): void {
+    const control = hitControl(layout, x, y);
+    if (control === 'pause') {
+      setPaused(!paused);
+      return;
+    }
+    if (control === 'exit') {
+      play('uiBack', 0, 0.4);
+      options.onExit();
+      return;
+    }
+    if (control === 'recenter') {
+      panX = 0;
+      panHold = 0;
+      play('uiClick', 0, 0.4);
+      return;
+    }
+    const kind = hitDeploy(layout, x, y);
+    if (kind) {
+      queuedDeploy = kind;
+      return;
+    }
+    if (hitLogistics(layout, x, y)) {
+      if (simulation.state.bonds >= simulation.state.logisticsCost) {
+        buyLogistics = true;
+      } else {
+        play('uiBack', 0, 0.3);
+      }
+    }
+  }
 
-  /** Write the result to the save file exactly once. */
-  private settle(): void {
-    const state = this.simulation.state;
-    if (state.status === 'running' || this.awarded) return;
-    this.awarded = true;
+  function setPaused(next: boolean): void {
+    if (next === paused) return;
+    paused = next;
+    options.onPauseChange?.(paused);
+  }
 
-    const { storage, stage } = this.options;
-    const before = storage.snapshot().unlockedStages;
-    const report = {
-      // The save file's counters, mapped to a battle: casualties are troopers
-      // lost, and the "best" figure is the strongest force taken to victory.
-      casualties: state.stats.losses,
-      kills: state.stats.kills,
-    };
-    let bonds = 0;
+  // Player intent for the next simulation step.
+  let queuedDeploy: UnitKind | null = null;
+  let buyLogistics = false;
 
+  function handleKeys(): void {
+    for (const key of input.takeKeys()) {
+      const lower = key.toLowerCase();
+      if (lower === 'escape') {
+        options.onExit();
+        return;
+      }
+      if (lower === 'p') {
+        setPaused(!paused);
+        continue;
+      }
+      if (lower === 'u') {
+        if (simulation.state.bonds >= simulation.state.logisticsCost) {
+          buyLogistics = true;
+        }
+        continue;
+      }
+      if (lower === 'c') {
+        panX = 0;
+        panHold = 0;
+        continue;
+      }
+      const kind = kindForHotkey(lower);
+      if (kind) queuedDeploy = kind;
+    }
+  }
+
+  function handleDrag(): void {
+    const drag = input.takeDrag();
+    if (!drag) return;
+    if (Math.abs(drag.dx) < 0.5 && Math.abs(drag.dy) < 0.5) return;
+    // A drag that happens over the dock is a deploy attempt, not a pan.
+    const pointer = input.pointer;
+    if (pointer === null) return;
+    if (pointer.y > layout.cssHeight - layout.dockHeight) return;
+    panX -= drag.dx / camera.zoom;
+    panHold = PAN_HOLD_SECONDS;
+  }
+
+  function step(dt: number): void {
+    handleKeys();
+    for (let tap = input.takeTap(); tap; tap = input.takeTap()) handleTap(tap.x, tap.y);
+    handleDrag();
+
+    if (paused) {
+      // Particles and shake still settle, but the war stops.
+      simulation.update(0, { deploy: null, buyLogistics: false });
+      queuedDeploy = null;
+      buyLogistics = false;
+      return;
+    }
+
+    const command: MatchCommand = { deploy: queuedDeploy, buyLogistics };
+    queuedDeploy = null;
+    buyLogistics = false;
+    simulation.update(dt, command);
+    handleEvents(simulation.takeEvents());
+    settle();
+  }
+
+  function settle(): void {
+    const state = simulation.state;
+    if (state.status === 'running' || awarded) return;
+    awarded = true;
+    const bondsCollected = state.bonds;
+    if (bondsCollected > 0) storage.addWarBonds(bondsCollected);
+    const report = { casualties: state.stats.losses, kills: state.stats.kills };
     if (state.status === 'victory') {
-      bonds = stage.rewardBonds;
-      storage.completeStage(stage.id, bonds, report);
+      storage.completeStage(stage.id, stage.rewardBonds, report);
     } else {
       storage.recordLoss(stage.id, report);
     }
-    // Bonds picked up on the field are banked whether or not the day was won —
-    // otherwise a loss would leave the player with nothing to spend at camp.
-    if (state.stats.bondsCollected > 0) {
-      storage.addWarBonds(state.stats.bondsCollected);
-    }
-
-    const after = storage.snapshot();
-    const unlocked = after.unlockedStages.find((id) => !before.includes(id)) ?? null;
-
-    this.outcomeValue = {
+    options.onFinish({
       nodeId: stage.id,
       nodeName: stage.name,
       year: stage.year,
-      situation: stageTagline(stage),
+      situation: options.situation,
       status: state.status,
-      lossReason: state.lossReason,
-      durationSeconds: state.time,
-      bondsAwarded: bonds,
-      bondsCollected: state.stats.bondsCollected,
+      lossReason: state.lossReason ?? '',
+      bondsAwarded: state.status === 'victory' ? stage.rewardBonds : 0,
+      bondsCollected,
       unitsDeployed: state.stats.deployed,
       unitsLost: state.stats.losses,
       enemyDestroyed: state.stats.kills,
-      logisticsBought: state.stats.logisticsBought,
-      playerBaseRemaining: Math.ceil(state.playerBase.hp),
+      minesHit: state.stats.minesHit,
+      enemyMinesHit: state.stats.enemyMinesHit,
+      logisticsBought: state.logisticsLevel,
+      playerBaseRemaining: Math.max(0, Math.round(state.playerBase.hp)),
       playerBaseMax: state.playerBase.maxHp,
-      enemyBaseRemaining: Math.ceil(state.enemyBase.hp),
+      enemyBaseRemaining: Math.max(0, Math.round(state.enemyBase.hp)),
       enemyBaseMax: state.enemyBase.maxHp,
-      unlockedStage: unlocked,
-    };
-    this.options.onFinish?.(this.outcomeValue);
+      durationSeconds: state.time,
+      unlockedStage: state.status === 'victory' ? (nextStageId(stage.id) ?? null) : null,
+    });
   }
+
+  /** Camera: follow the fighting, respect a manual pan, ease back after a beat. */
+  function updateCamera(dt: number): void {
+    const state = simulation.state;
+    const wanted = state.focusX;
+    followX += (wanted - followX) * Math.min(1, dt * FOLLOW_RATE);
+    if (!paused && panHold > 0) panHold = Math.max(0, panHold - dt);
+    if (panHold === 0 && panX !== 0) {
+      panX *= Math.max(0, 1 - dt * 1.4);
+      if (Math.abs(panX) < 0.5) panX = 0;
+    }
+    camera = cameraAt(camera, VIEW_WIDTH, VIEW_HEIGHT, followX + panX, GROUND_Y);
+  }
+
+  function resize(): void {
+    layout = computeHudLayout(surface.width, surface.height, touch);
+    camera = createCamera(
+      surface.width,
+      surface.height,
+      VIEW_WIDTH,
+      VIEW_HEIGHT,
+      CAMERA_ZOOM,
+      GROUND_Y,
+    );
+    camera = cameraAt(camera, VIEW_WIDTH, VIEW_HEIGHT, followX + panX, GROUND_Y);
+  }
+
+  function render(): void {
+    const state = simulation.state;
+    renderer.draw(surface.ctx, state, camera, layout, {
+      nodeName: stage.name,
+      year: stage.year,
+      strongpoint: state.enemyBase.side === 'enemy' ? stage.bossName : stage.bossName,
+      faction,
+      tier: stage.tier,
+      fps: fpsValue,
+      paused,
+      touch,
+      following: panX === 0,
+    });
+  }
+
+  function loop(now: number): void {
+    if (disposed) return;
+    const elapsed = Math.min(0.25, Math.max(0, (now - last) / 1000));
+    last = now;
+    fpsValue = fpsValue * 0.9 + (elapsed > 0 ? 1 / elapsed : 60) * 0.1;
+
+    accumulator += elapsed;
+    const stepSeconds = 1 / 60;
+    let steps = 0;
+    while (accumulator >= stepSeconds && steps < 5) {
+      step(stepSeconds);
+      accumulator -= stepSeconds;
+      steps += 1;
+    }
+    updateCamera(elapsed);
+    render();
+    frame = requestAnimationFrame(loop);
+  }
+
+  surface.onDraw = () => {
+    resize();
+    render();
+  };
+  frame = requestAnimationFrame((now) => {
+    last = now;
+    loop(now);
+  });
+
+  return {
+    get state() {
+      return simulation.state;
+    },
+    get camera() {
+      return camera;
+    },
+    get layout() {
+      return layout;
+    },
+    get fps() {
+      return fpsValue;
+    },
+    get paused() {
+      return paused;
+    },
+    setPaused,
+    dispose() {
+      disposed = true;
+      cancelAnimationFrame(frame);
+      input.dispose();
+      surface.onDraw = null;
+    },
+  };
 }
 
-export { HALF_BAR };
+/** Touch-first device? Keyboard hints are pointless there. */
+export function prefersTouch(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  const coarse = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+  const noHover = window.matchMedia('(hover: none)').matches;
+  const touchPoints = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
+  return coarse || noHover || touchPoints;
+}
+
+export type { Camera, HudLayout };

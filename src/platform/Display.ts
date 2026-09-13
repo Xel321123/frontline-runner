@@ -10,6 +10,10 @@
 import { createCanvas, get2dContext } from './images';
 
 export type OrientationLockResult = 'locked' | 'unsupported' | 'denied';
+export function exitFullscreen(): void {
+  if (typeof document === 'undefined') return;
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+}
 
 export interface CanvasSurfaceOptions {
   /** Cap the device pixel ratio so 3x phones do not render 9x the pixels. */
@@ -130,11 +134,34 @@ export async function tryLockLandscape(): Promise<OrientationLockResult> {
   }
 }
 
-export async function requestFullscreen(element: HTMLElement): Promise<boolean> {
+/**
+ * Enter fullscreen and lock landscape, from inside a user gesture.
+ *
+ * Browsers only honour `requestFullscreen` when it is called synchronously from
+ * a real interaction, which is why the Deploy button calls this directly rather
+ * than after the canvas has been built. Everything here is best-effort: iPhone
+ * Safari has no fullscreen for non-video elements, and the game must still be
+ * perfectly playable filling the window without it.
+ */
+export async function enterFullscreen(): Promise<boolean> {
+  if (typeof document === 'undefined') return false;
+  const target = document.documentElement as HTMLElement & {
+    webkitRequestFullscreen?: () => Promise<void> | void;
+    webkitRequestFullScreen?: () => Promise<void> | void;
+  };
+  const scope = target as HTMLElement;
   try {
-    await element.requestFullscreen();
-    return true;
+    if (!document.fullscreenElement) {
+      const request =
+        scope.requestFullscreen?.bind(scope) ??
+        target.webkitRequestFullscreen?.bind(target) ??
+        target.webkitRequestFullScreen?.bind(target);
+      if (!request) return false;
+      await request({ navigationUI: 'hide' } as FullscreenOptions);
+    }
   } catch {
     return false;
   }
+  await tryLockLandscape();
+  return true;
 }

@@ -8,7 +8,7 @@
  */
 
 import type { Environment } from '../data/campaignData';
-import { GROUND_Y, VIEW_HEIGHT, VIEW_WIDTH } from '../game/constants';
+import { GROUND_Y } from '../game/constants';
 import { SEARCHLIGHT_HALF_WIDTH, type EnvironmentRules } from '../game/environment';
 
 function hash1(n: number): number {
@@ -18,7 +18,12 @@ function hash1(n: number): number {
 }
 
 /** Falling snow: a drifting field of flakes that wraps as it descends. */
-function drawSnowfall(ctx: CanvasRenderingContext2D, time: number): void {
+function drawSnowfall(
+  ctx: CanvasRenderingContext2D,
+  time: number,
+  VIEW_WIDTH: number,
+  VIEW_HEIGHT: number,
+): void {
   const flakes = 170;
   for (let i = 0; i < flakes; i += 1) {
     const speed = 34 + hash1(i * 7 + 1) * 74;
@@ -39,7 +44,7 @@ function drawSnowfall(ctx: CanvasRenderingContext2D, time: number): void {
 }
 
 /** Blowing sand: horizontal streaks with a hot haze that kills contrast. */
-function drawSandstorm(ctx: CanvasRenderingContext2D, time: number): void {
+function drawSandstorm(ctx: CanvasRenderingContext2D, time: number, VIEW_WIDTH: number, VIEW_HEIGHT: number): void {
   const streaks = 90;
   for (let i = 0; i < streaks; i += 1) {
     const speed = 220 + hash1(i * 5 + 1) * 320;
@@ -66,7 +71,7 @@ function drawSandstorm(ctx: CanvasRenderingContext2D, time: number): void {
 }
 
 /** Ground mist rising off standing water in the mud. */
-function drawMist(ctx: CanvasRenderingContext2D, time: number): void {
+function drawMist(ctx: CanvasRenderingContext2D, time: number, VIEW_WIDTH: number): void {
   ctx.globalAlpha = 0.09;
   ctx.fillStyle = '#cfc6b0';
   for (let i = 0; i < 6; i += 1) {
@@ -84,6 +89,8 @@ function drawNight(
   ctx: CanvasRenderingContext2D,
   beams: readonly number[],
   time: number,
+  VIEW_WIDTH: number,
+  VIEW_HEIGHT: number,
 ): void {
   ctx.fillStyle = 'rgba(4, 8, 16, 0.52)';
   ctx.fillRect(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
@@ -130,7 +137,11 @@ export interface AtmosphereOptions {
   readonly environment: Environment;
   readonly rules: EnvironmentRules;
   readonly time: number;
+  /** Searchlight pools already mapped to screen x. */
   readonly searchlights: readonly number[];
+  /** Canvas size in CSS pixels — the overlay covers the whole window. */
+  readonly cssWidth: number;
+  readonly cssHeight: number;
 }
 
 /** Draw the weather over the finished battlefield. */
@@ -139,8 +150,10 @@ export function drawAtmosphere(
   options: AtmosphereOptions,
 ): void {
   const { rules, time, searchlights } = options;
-  if (rules.snowfall) drawSnowfall(ctx, time);
-  if (rules.sandstorm) drawSandstorm(ctx, time);
-  if (options.environment === 'mud') drawMist(ctx, time);
-  if (rules.searchlights) drawNight(ctx, searchlights, time);
+  const VIEW_WIDTH = Math.max(1, options.cssWidth);
+  const VIEW_HEIGHT = Math.max(1, options.cssHeight);
+  if (rules.snowfall) drawSnowfall(ctx, time, VIEW_WIDTH, VIEW_HEIGHT);
+  if (rules.sandstorm) drawSandstorm(ctx, time, VIEW_WIDTH, VIEW_HEIGHT);
+  if (options.environment === 'mud') drawMist(ctx, time, VIEW_WIDTH);
+  if (rules.searchlights) drawNight(ctx, searchlights, time, VIEW_WIDTH, VIEW_HEIGHT);
 }
