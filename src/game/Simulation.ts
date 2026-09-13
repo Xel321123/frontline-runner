@@ -105,6 +105,7 @@ export class Simulation {
     kills: 0,
     cratesCollected: 0,
     troopsFromCrates: 0,
+    troopsGained: 0,
     gateGains: 0,
     gateLosses: 0,
     troopsLost: 0,
@@ -485,6 +486,7 @@ export class Simulation {
       this.troopsValue = Math.min(this.config.maxTroops, this.troopsValue + gained);
       this.statsValue.cratesCollected += 1;
       this.statsValue.troopsFromCrates += Math.max(0, applied);
+      this.statsValue.troopsGained += Math.max(0, applied);
       this.pushPopup(crate.x, crate.y - 46, `+${gained} PARATROOPERS`, 'gain');
       this.emit({ type: 'crateDeployed', amount: gained });
     }
@@ -497,6 +499,7 @@ export class Simulation {
       const after = this.applyGate(gate.op, gate.value, before);
       this.troopsValue = after;
       const delta = after - before;
+      if (delta > 0) this.statsValue.troopsGained += delta;
       const gain = delta >= 0;
       if (gain) this.statsValue.gateGains += 1;
       else this.statsValue.gateLosses += 1;

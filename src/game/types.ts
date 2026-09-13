@@ -86,6 +86,8 @@ export interface RunStats {
   kills: number;
   cratesCollected: number;
   troopsFromCrates: number;
+  /** Every troop added mid-run (crates + favourable gates). */
+  troopsGained: number;
   gateGains: number;
   gateLosses: number;
   troopsLost: number;

@@ -6,7 +6,7 @@
  * enemy tier and war-bond reward) so the save layer validates against exactly
  * the same ids the UI and renderer use.
  */
-import type { StageId, UpgradeId, UpgradeLevels } from './types';
+import type { StageId, StageRecord, UpgradeId, UpgradeLevels } from './types';
 import { UNIT_TIERS } from './assets';
 import type { CampaignNode } from '../data/campaignData';
 import {
@@ -129,6 +129,103 @@ export function campaignProgress(
   };
 }
 
+/** How a node should be drawn on the campaign map. */
+export type NodeStatus = 'cleared' | 'contested' | 'current' | 'locked';
+
+export interface CampaignNodeState {
+  readonly stage: StageDefinition;
+  readonly status: NodeStatus;
+  readonly wins: number;
+  readonly losses: number;
+  readonly casualties: number;
+  readonly bestTroops: number;
+  /** True while this is the node the next deployment would fight. */
+  readonly deployable: boolean;
+}
+
+/**
+ * Derive the whole map from the save: cleared ground (green), ground that has
+ * cost the player troops (red), the next objective (gold) and the rest (grey).
+ */
+export function campaignMap(
+  faction: 'allied' | 'axis',
+  unlockedStages: readonly StageId[],
+  records: Readonly<Record<string, StageRecord>>,
+): readonly CampaignNodeState[] {
+  const stages = STAGES_BY_FACTION[faction];
+  let currentTaken = false;
+
+  return stages.map((stage) => {
+    const record = records[stage.id];
+    const unlocked = unlockedStages.includes(stage.id);
+    const wins = record ? record.wins : 0;
+    const losses = record ? record.losses : 0;
+    const cleared = wins > 0;
+
+    let status: NodeStatus = 'locked';
+    let deployable = false;
+    if (cleared) {
+      status = 'cleared';
+    } else if (unlocked && !currentTaken) {
+      // The first unlocked node that has not been won is the live objective.
+      status = losses > 0 ? 'contested' : 'current';
+      deployable = true;
+      currentTaken = true;
+    } else if (unlocked && losses > 0) {
+      status = 'contested';
+    }
+
+    return {
+      stage,
+      status,
+      wins,
+      losses,
+      casualties: record ? record.casualties : 0,
+      bestTroops: record ? record.bestTroops : 0,
+      deployable,
+    };
+  });
+}
+
+/** Campaign-wide totals for the map header and the result screens. */
+export function campaignTotals(
+  faction: 'allied' | 'axis',
+  records: Readonly<Record<string, StageRecord>>,
+): {
+  readonly cleared: number;
+  readonly contested: number;
+  readonly casualties: number;
+  readonly deployments: number;
+} {
+  const stages = STAGES_BY_FACTION[faction];
+  let cleared = 0;
+  let contested = 0;
+  let casualties = 0;
+  let deployments = 0;
+  for (const stage of stages) {
+    const record = records[stage.id];
+    if (!record) continue;
+    if (record.wins > 0) cleared += 1;
+    else if (record.losses > 0) contested += 1;
+    casualties += record.casualties;
+    deployments += record.wins + record.losses;
+  }
+  return { cleared, contested, casualties, deployments };
+}
+
+/**
+ * The node a deployment would actually fight: the first *uncleared* unlocked
+ * node. (`campaignProgress().next` answers a different question — the first
+ * unlocked node — so a cleared sector would otherwise be offered again.)
+ */
+export function nextObjective(
+  faction: 'allied' | 'axis',
+  unlockedStages: readonly StageId[],
+  records: Readonly<Record<string, StageRecord>>,
+): StageDefinition | undefined {
+  return campaignMap(faction, unlockedStages, records).find((state) => state.deployable)?.stage;
+}
+
 export { CAMPAIGNS, CAMPAIGN_LENGTH, getCampaignNode, stageIndexOf };
 
 export interface UpgradeDefinition {
@@ -140,44 +237,86 @@ export interface UpgradeDefinition {
   readonly baseCost: number;
   /** Additional bonds per level already owned. */
   readonly costStep: number;
+  /** Effect per level, so the camp screen and the simulation agree. */
+  readonly perLevel: {
+    /** Extra troops at deployment. */
+    readonly troops?: number;
+    /** Multiplicative bonus to projectile damage. */
+    readonly damage?: number;
+    /** Multiplicative bonus to rounds per second. */
+    readonly fireRate?: number;
+    /** Extra mid-run revives. */
+    readonly revives?: number;
+  };
 }
 
+/** Troops a stock squad deploys with, before any Starting Squad levels. */
+export const BASE_SQUAD_TROOPS = 3;
+export const TROOPS_PER_ARMOUR_LEVEL = 1;
+export const DAMAGE_PER_FIREPOWER_LEVEL = 0.15;
+export const FIRE_RATE_PER_MOBILITY_LEVEL = 0.06;
+export const REVIVES_PER_MEDKIT_LEVEL = 1;
+
+/**
+ * Upgrade tracks sold at camp. The ids are persisted, so they are stable;
+ * `name` is the label the camp screen shows.
+ */
 export const UPGRADES: readonly UpgradeDefinition[] = [
   {
-    id: 'firepower',
-    name: 'Firepower',
-    description: 'Higher damage per shot.',
-    maxLevel: 5,
-    baseCost: 120,
-    costStep: 90,
-  },
-  {
     id: 'armour',
-    name: 'Armour',
-    description: 'Absorbs an extra hit per level.',
+    name: 'Starting Squad',
+    description: 'Deploy with more troopers in the line.',
     maxLevel: 5,
     baseCost: 140,
     costStep: 100,
+    perLevel: { troops: TROOPS_PER_ARMOUR_LEVEL },
+  },
+  {
+    id: 'firepower',
+    name: 'Damage',
+    description: 'Every round hits harder.',
+    maxLevel: 5,
+    baseCost: 120,
+    costStep: 90,
+    perLevel: { damage: DAMAGE_PER_FIREPOWER_LEVEL },
   },
   {
     id: 'mobility',
-    name: 'Mobility',
-    description: 'Faster lane changes and reload.',
+    name: 'Fire Rate',
+    description: 'The squad works the bolt faster.',
     maxLevel: 5,
     baseCost: 110,
     costStep: 80,
+    perLevel: { fireRate: FIRE_RATE_PER_MOBILITY_LEVEL },
   },
   {
     id: 'medkit',
-    name: 'Medkit',
+    name: 'Field Medkit',
     description: 'One extra revive per run.',
     maxLevel: 3,
     baseCost: 200,
     costStep: 150,
+    perLevel: { revives: REVIVES_PER_MEDKIT_LEVEL },
   },
 ];
 
 const UPGRADE_BY_ID = new Map(UPGRADES.map((upgrade) => [upgrade.id, upgrade]));
+
+/**
+ * Human-readable effect of owning `level` levels of a track, e.g.
+ * `+2 troops`, `+30% damage`. Used by the camp screen.
+ */
+export function upgradeEffectLabel(id: UpgradeId, level: number): string {
+  const upgrade = UPGRADE_BY_ID.get(id);
+  if (!upgrade) return '';
+  const parts: string[] = [];
+  const { troops = 0, damage = 0, fireRate = 0, revives = 0 } = upgrade.perLevel;
+  if (troops > 0) parts.push(`+${troops * level} troops (${BASE_SQUAD_TROOPS + troops * level} at deploy)`);
+  if (damage > 0) parts.push(`+${Math.round(damage * level * 100)}% damage`);
+  if (fireRate > 0) parts.push(`+${Math.round(fireRate * level * 100)}% fire rate`);
+  if (revives > 0) parts.push(`+${revives * level} revive${revives * level === 1 ? '' : 's'}`);
+  return level > 0 ? parts.join(' · ') : 'not upgraded';
+}
 
 export function getUpgrade(id: UpgradeId): UpgradeDefinition | undefined {
   return UPGRADE_BY_ID.get(id);

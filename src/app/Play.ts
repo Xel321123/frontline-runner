@@ -37,8 +37,16 @@ import { UnitSpriteBank } from '../render/UnitSprites';
 
 export interface RunOutcome {
   readonly nodeId: string;
+  readonly nodeName: string;
+  readonly year: string;
   readonly status: RunStatus;
-  readonly troops: number;
+  readonly lossReason: 'squad-wiped' | 'time-expired' | null;
+  /** Troops still standing when the run ended. */
+  readonly troopsRemaining: number;
+  readonly casualties: number;
+  readonly troopsGained: number;
+  readonly kills: number;
+  readonly cratesCollected: number;
   readonly bondsAwarded: number;
   readonly unlockedStage: string | null;
 }
@@ -51,8 +59,10 @@ export interface PlaySessionOptions {
   readonly faction: Faction;
   readonly node: CampaignNode;
   readonly stage: StageDefinition;
-  /** Called when the player leaves the run (ESC or after finishing). */
-  readonly onExit: (outcome: RunOutcome) => void;
+  /** Called when the player leaves the run with ESC (no result screen). */
+  readonly onExit: () => void;
+  /** Called once, the moment the run is decided (win or loss). */
+  readonly onFinish?: (outcome: RunOutcome) => void;
 }
 
 const HALF_BAND = SQUAD_BAND_HEIGHT / 2;
@@ -247,11 +257,17 @@ export class PlaySession {
 
     const { storage, stage, node } = this.options;
     const before = storage.snapshot().unlockedStages;
+    const report = {
+      casualties: state.stats.troopsLost,
+      troopsRemaining: state.troops,
+    };
     let bonds = 0;
 
     if (state.status === 'won') {
       bonds = stage.rewardBonds;
-      storage.completeStage(stage.id, bonds);
+      storage.completeStage(stage.id, bonds, report);
+    } else {
+      storage.recordLoss(stage.id, report);
     }
 
     const after = storage.snapshot();
@@ -259,11 +275,19 @@ export class PlaySession {
 
     this.outcomeValue = {
       nodeId: node.id,
+      nodeName: node.name,
+      year: node.year,
       status: state.status,
-      troops: state.troops,
+      lossReason: state.lossReason,
+      troopsRemaining: state.troops,
+      casualties: state.stats.troopsLost,
+      troopsGained: state.stats.troopsGained,
+      kills: state.stats.kills,
+      cratesCollected: state.stats.cratesCollected,
       bondsAwarded: bonds,
       unlockedStage: unlocked,
     };
+    this.options.onFinish?.(this.outcomeValue);
   }
 
   // ------------------------------------------------------------------ audio
@@ -337,15 +361,7 @@ export class PlaySession {
     }
     if (event.key === 'Escape') {
       event.preventDefault();
-      this.options.onExit(
-        this.outcomeValue ?? {
-          nodeId: this.options.node.id,
-          status: this.simulation.state.status,
-          troops: this.simulation.state.troops,
-          bondsAwarded: 0,
-          unlockedStage: null,
-        },
-      );
+      this.options.onExit();
       return;
     }
     if (event.key === ' ' && this.simulation.state.status !== 'running') {

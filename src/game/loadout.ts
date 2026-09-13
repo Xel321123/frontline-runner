@@ -18,12 +18,18 @@ import type { WeaponStats } from '../data/campaignData';
 import { availableWeapons, startingWeapon } from '../data/campaignData';
 import {
   BASE_SQUAD,
-  DAMAGE_PER_FIREPOWER_LEVEL,
-  FIRE_RATE_PER_MOBILITY_LEVEL,
   MAX_TROOPS,
-  REVIVES_PER_MEDKIT_LEVEL,
-  TROOPS_PER_ARMOUR_LEVEL,
 } from './constants';
+import { getUpgrade } from '../core/progression';
+import type { UpgradeId } from '../core/types';
+
+/**
+ * Read an upgrade's per-level effect from the same definition the camp screen
+ * displays, so a rebalance cannot leave the UI and the simulation disagreeing.
+ */
+function perLevel(id: UpgradeId, key: 'troops' | 'damage' | 'fireRate' | 'revives'): number {
+  return getUpgrade(id)?.perLevel[key] ?? 0;
+}
 import type { SimConfig } from './types';
 
 export interface Loadout {
@@ -70,8 +76,8 @@ export function createLoadout(
 ): Loadout {
   const weapon = pickWeapon(faction, stageIndex);
 
-  const damageMultiplier = 1 + DAMAGE_PER_FIREPOWER_LEVEL * upgrades.firepower;
-  const rateMultiplier = 1 + FIRE_RATE_PER_MOBILITY_LEVEL * upgrades.mobility;
+  const damageMultiplier = 1 + perLevel('firepower', 'damage') * upgrades.firepower;
+  const rateMultiplier = 1 + perLevel('mobility', 'fireRate') * upgrades.mobility;
   const rate = Math.max(0.1, weapon.fireRate * rateMultiplier);
 
   return {
@@ -81,8 +87,11 @@ export function createLoadout(
     damagePerTroop: weapon.damage * damageMultiplier,
     fireInterval: 1 / rate,
     spreadDegrees: weapon.spread,
-    startingTroops: BASE_SQUAD + TROOPS_PER_ARMOUR_LEVEL * upgrades.armour,
-    revives: REVIVES_PER_MEDKIT_LEVEL * upgrades.medkit,
+    startingTroops: Math.min(
+      MAX_TROOPS,
+      BASE_SQUAD + perLevel('armour', 'troops') * upgrades.armour,
+    ),
+    revives: perLevel('medkit', 'revives') * upgrades.medkit,
     maxTroops: MAX_TROOPS,
     upgrades,
   };

@@ -1,22 +1,27 @@
-/* Frontline Runner — step 1 shell styles.
-   Self-contained: no web fonts, no CDN, everything works offline. */
+/**
+ * Frontline Runner — UI styles.
+ *
+ * Self-contained: no web fonts, no CDN, no external images. The only image is
+ * the theatre map served from our own /assets folder (and precached for offline
+ * play). Everything is plain CSS custom properties so the palette can be
+ * retuned in one place.
+ */
 
 :root {
-  color-scheme: dark;
   --ink: #0d1210;
-  --panel: #151d18;
-  --panel-2: #1b2620;
-  --line: #2a382f;
-  --text: #dfe7d8;
-  --muted: #93a493;
-  --accent: #7d8f52;
-  --warn: #c8a13a;
-  --danger: #b3553f;
+  --ink-2: #111815;
+  --panel: #161e19;
+  --panel-2: #1d2721;
+  --line: #2b362d;
+  --text: #e6ecdd;
+  --muted: #93a28f;
+  --accent: #c9e06a;
+  --gold: #e8c15a;
+  --green: #7fbf6a;
+  --red: #d9705f;
+  --blue: #8fc4ff;
+  --radius: 12px;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-right: env(safe-area-inset-right, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --safe-left: env(safe-area-inset-left, 0px);
 }
 
 * {
@@ -26,58 +31,56 @@
 html,
 body {
   margin: 0;
+  padding: 0;
   height: 100%;
   background: var(--ink);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-size: 15px;
-  /* Native-app feel: no rubber-banding, no text selection, no tap highlight. */
+  -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
-  -webkit-text-size-adjust: 100%;
-  -webkit-tap-highlight-color: transparent;
-  -webkit-user-select: none;
-  user-select: none;
 }
 
-body {
-  overflow: hidden;
-}
-
-/* The mount point must have a definite height, otherwise the 100% heights
-   below resolve against `auto` and the layout grows to content height. */
 #app {
   height: 100%;
   min-height: 0;
 }
 
+.mono {
+  font-family: var(--mono);
+}
+
+/* ------------------------------------------------------------------ shell */
+
 .app {
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  height: 100%;
-  padding: calc(10px + var(--safe-top)) calc(12px + var(--safe-right))
-    calc(12px + var(--safe-bottom)) calc(12px + var(--safe-left));
+  min-height: 0;
 }
 
 .bar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 16px;
+  padding: 10px 18px;
+  background: linear-gradient(180deg, #131a16, #0f1512);
+  border-bottom: 1px solid var(--line);
 }
 
-.bar h1 {
+.brand h1 {
   margin: 0;
-  font-size: 20px;
-  letter-spacing: 0.06em;
+  font-size: 18px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
+  color: var(--accent);
 }
 
-.bar .sub {
+.brand .sub {
   margin: 2px 0 0;
-  color: var(--muted);
   font-size: 12px;
+  color: var(--muted);
 }
 
 .bar-actions {
@@ -85,247 +88,825 @@ body {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-.layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 330px);
-  /* minmax(0, 1fr) lets the row shrink below its content height, so the stage
-     stays inside the viewport instead of overflowing behind `overflow: hidden`. */
-  grid-template-rows: minmax(0, 1fr);
-  gap: 12px;
-  min-height: 0;
-  flex: 1;
-}
-
-.stage-wrap {
-  position: relative;
-  min-height: 0;
-  background: #080b09;
+.bond-badge {
+  font-size: 12px;
+  color: var(--gold);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 999px;
+  padding: 5px 12px;
+  background: var(--panel);
+  white-space: nowrap;
+}
+
+.chip,
+.btn {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, transform 0.06s ease;
+}
+
+.chip:hover,
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chip:active,
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0f1409;
+  font-weight: 700;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: #d8ee7c;
+  color: #0f1409;
+}
+
+.btn--ghost {
+  background: transparent;
+  color: var(--muted);
+}
+
+.btn--small {
+  padding: 4px 11px;
+  font-size: 11.5px;
+}
+
+.btn--danger:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
-.stage {
-  display: block;
+.hint {
+  flex: 0 0 auto;
+  padding: 7px 18px;
+  font-size: 12px;
+  color: var(--muted);
+  background: #0f1512;
+  border-top: 1px solid var(--line);
+  min-height: 30px;
 }
 
-.panel {
+/* ---------------------------------------------------------------- screens */
+
+#screen {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+}
+
+.screen {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.screen-head h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+}
+
+.lede {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+  max-width: 62ch;
+}
+
+.screen-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 16px;
+}
+
+/* title screen */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.card {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 12px;
-  background: var(--panel);
+  align-items: flex-start;
+  gap: 8px;
+  text-align: left;
+  padding: 18px;
+  background: linear-gradient(160deg, var(--panel-2), var(--panel));
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  transition: border-color 0.15s ease, transform 0.1s ease;
 }
 
-.panel h2 {
-  margin: 0 0 8px;
+.card:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.card.is-selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(201, 224, 106, 0.35);
+}
+
+.card-kicker {
   font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.card-title {
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.card-body {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.card-stats {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--gold);
+  font-family: var(--mono);
+}
+
+/* campaign map */
+
+.map-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.map-stats {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.map-stats b {
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+.legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+
+.swatch--cleared {
+  background: var(--green);
+}
+
+.swatch--current {
+  background: var(--gold);
+}
+
+.swatch--contested {
+  background: var(--red);
+}
+
+.swatch--locked {
+  background: #4a544c;
+}
+
+.map {
+  position: relative;
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+  aspect-ratio: 1401 / 1198;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #0a1216;
+}
+
+.map-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  opacity: 0.42;
+  filter: saturate(0.6) contrast(1.05);
+}
+
+.map-nodes {
+  position: absolute;
+  inset: 0;
+}
+
+.node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+.node-dot {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 9.5px;
+  font-family: var(--mono);
+  font-weight: 700;
+  color: #0d1210;
+  border: 2px solid rgba(0, 0, 0, 0.45);
+  /* A light rim keeps neighbouring dots readable where the historical
+     coordinates sit almost on top of each other (Normandy, the Ardennes). */
+  box-shadow: 0 0 0 1px rgba(230, 236, 221, 0.35);
+  transition: transform 0.12s ease;
+}
+
+.node:hover,
+.node:focus-visible {
+  z-index: 6;
+}
+
+/* Active nodes (and their labels) always sit above locked dots — the dense
+   Western-Europe cluster otherwise buries the objective's label. */
+.node--cleared,
+.node--current,
+.node--contested {
+  z-index: 4;
+}
+
+.node-label {
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text);
+  background: rgba(9, 13, 11, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.node:hover .node-dot {
+  transform: scale(1.25);
+}
+
+.node--locked .node-dot {
+  background: #3d4741;
+  color: #8b968f;
+  border-style: dashed;
+}
+
+.node--locked {
+  opacity: 0.75;
+}
+
+.node--cleared .node-dot {
+  background: var(--green);
+}
+
+.node--current .node-dot,
+.node--contested.is-deployable .node-dot {
+  background: var(--gold);
+  box-shadow: 0 0 0 0 rgba(232, 193, 90, 0.65);
+  animation: pulse 1.9s infinite;
+}
+
+.node--contested .node-dot {
+  background: var(--red);
+}
+
+@keyframes pulse {
+  70% {
+    box-shadow: 0 0 0 12px rgba(232, 193, 90, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(232, 193, 90, 0);
+  }
+}
+
+.map-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.objective b {
+  color: var(--accent);
+}
+
+/* ----------------------------------------------------------------- modals */
+
+#modal-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(5, 8, 6, 0.74);
+  backdrop-filter: blur(3px);
+}
+
+/* `hidden` must win over the layout display values below, or an empty overlay
+   would dim every screen (a UA `[hidden]` rule loses to a class selector). */
+#modal-layer[hidden],
+#play[hidden],
+#diagnostics[hidden] {
+  display: none;
+}
+
+.modal {
+  width: 100%;
+  max-width: 900px;
+  max-height: 88vh;
+  overflow: auto;
+  padding: 22px 24px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+
+.modal-head {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+}
+
+.modal-head h2 {
+  margin: 4px 0 0;
+  font-size: 24px;
+}
+
+.modal-head--win h2 {
+  color: var(--accent);
+}
+
+.modal-head--loss h2 {
+  color: var(--red);
+}
+
+.modal-kicker {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.briefing {
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--text);
+  border-left: 3px solid var(--gold);
+  padding-left: 14px;
+  margin: 0 0 16px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px 18px;
+  margin: 0 0 16px;
+}
+
+.detail-grid div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.detail-grid dt {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.detail-grid dd {
+  margin: 0;
+  font-size: 13.5px;
+  font-family: var(--mono);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+/* camp */
+
+.camp-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 20px;
+}
+
+@media (max-width: 760px) {
+  .camp-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.camp-block h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
-.rows {
+.weapon-card {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.weapon-card b {
+  display: block;
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.weapon-card p {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.loadout {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  font-size: 12.5px;
+}
+
+.loadout li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--line);
+  color: var(--muted);
+}
+
+.loadout b {
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+.upgrades {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-
-.row {
-  display: flex;
   gap: 10px;
-  align-items: baseline;
+}
+
+.upgrade {
+  display: flex;
   justify-content: space-between;
-  font-family: var(--mono);
-  font-size: 12px;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
 }
 
-.row .key {
+.upgrade-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.upgrade-head b {
+  font-size: 14.5px;
+}
+
+.upgrade-desc {
+  margin: 4px 0 2px;
+  font-size: 12.5px;
   color: var(--muted);
-  white-space: nowrap;
 }
 
-.row .key.locked::after {
-  content: " 🔒";
-}
-
-.mission-title {
-  margin: 0 0 6px;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
-.briefing {
-  margin: 8px 0 0;
-  padding-left: 8px;
-  border-left: 2px solid var(--accent);
-  color: #c9d4c2;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.row .val {
-  text-align: right;
-  overflow-wrap: anywhere;
-}
-
-.row .val.ok {
+.upgrade-effect {
+  margin: 0;
+  font-size: 11.5px;
   color: var(--accent);
 }
 
-.row .val.warn {
-  color: var(--warn);
+.upgrade-buy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.cost {
+  font-size: 12.5px;
+  font-family: var(--mono);
+  color: var(--gold);
+}
+
+.cost.is-poor {
+  color: var(--muted);
+}
+
+.level {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.pips {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.pip {
+  width: 12px;
+  height: 5px;
+  border-radius: 2px;
+  background: #2c3730;
+  display: inline-block;
+}
+
+.pip.is-filled {
+  background: var(--accent);
+}
+
+.tag {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+
+/* result */
+
+.result-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.result-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.result-stat span {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.result-stat b {
+  font-size: 20px;
+  font-family: var(--mono);
+}
+
+.result-stat b.pos {
+  color: var(--accent);
+}
+
+.result-stat b.neg {
+  color: var(--red);
+}
+
+.unlock-line {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(201, 224, 106, 0.35);
+  border-radius: 10px;
+  background: rgba(201, 224, 106, 0.08);
+  font-size: 13.5px;
+}
+
+/* diagnostics */
+
+#diagnostics {
+  padding: 0 18px 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+#diagnostics h3 {
+  margin: 12px 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.diag-rows {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+}
+
+.diag-rows li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.diag-rows b {
+  color: var(--text);
+  font-family: var(--mono);
 }
 
 .failures {
-  margin-top: 8px;
-  padding: 8px;
-  border-left: 3px solid var(--warn);
-  background: rgba(200, 161, 58, 0.08);
-  color: var(--warn);
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.chip {
-  appearance: none;
-  cursor: pointer;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel-2);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 12px;
-  transition: background 120ms ease, border-color 120ms ease;
-}
-
-.chip:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-
-.chip:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.chip.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #0f1409;
-  font-weight: 700;
-}
-
-.chip.danger:hover {
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.chip.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #0f1409;
-  font-weight: 700;
-}
-
-.chip.primary:disabled {
-  background: var(--panel-2);
-  border-color: var(--line);
-  color: var(--muted);
-  font-weight: 400;
-}
-
-.chip.mini {
-  padding: 2px 7px;
-  font-size: 11px;
-  vertical-align: middle;
-}
-
-/* While a run is live the canvas gets the whole area: this is a landscape game. */
-body.playing .panel {
-  display: none;
-}
-
-body.playing .layout {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-body.playing .stage-wrap {
-  border-color: #2f3a30;
-}
-
-/* Steering by drag must not scroll or zoom the page. */
-.stage {
-  touch-action: none;
+  margin: 0 0 10px;
+  padding-left: 18px;
+  color: var(--red);
 }
 
 .fine {
-  margin: 8px 0 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.mono {
-  font-family: var(--mono);
+  margin: 10px 0 0;
   font-size: 12px;
   color: var(--muted);
 }
 
+/* ------------------------------------------------------------------- play */
+
+#play {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.stage-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid #2f3a30;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #050706;
+  touch-action: none;
+}
+
+.stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.play-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* while a run is live, the menus step aside */
+
+body.playing .chip#btn-camp {
+  display: none;
+}
+
+/* portrait nudge */
+
+body.portrait .stage-wrap::after {
+  content: "↻ rotate to landscape";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(5, 7, 6, 0.9);
+}
+
 .fatal {
-  padding: 20px;
-  font-family: var(--mono);
-  color: var(--danger);
+  padding: 28px;
+  color: var(--red);
 }
 
 .fatal pre {
   white-space: pre-wrap;
-  color: var(--text);
+  font-size: 12px;
+  color: var(--muted);
 }
 
-/* Portrait is unusable for a landscape runner — say so instead of breaking. */
-body.portrait::after {
-  content: "Rotate to landscape ⟳";
-  position: fixed;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: rgba(8, 11, 9, 0.94);
-  color: var(--warn);
-  font-family: var(--mono);
-  font-size: 18px;
-  letter-spacing: 0.08em;
-  z-index: 20;
-}
-
-@media (max-width: 860px), (orientation: portrait) {
-  .layout {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(160px, 1fr) auto;
+@media (max-width: 640px) {
+  .bar {
+    padding: 8px 12px;
   }
 
-  .panel {
-    max-height: 46vh;
+  .brand h1 {
+    font-size: 15px;
   }
-}
 
-@media (prefers-reduced-motion: reduce) {
-  .chip {
-    transition: none;
+  .node-label {
+    display: none;
+  }
+
+  .node--current .node-label,
+  .node.is-deployable .node-label {
+    display: inline;
   }
 }

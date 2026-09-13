@@ -12,12 +12,21 @@
  */
 
 import {
+  EMPTY_STAGE_RECORD,
   SAVE_VERSION,
   createFreshSave,
   isFaction,
+  isStageRecord,
   systemClock,
 } from '../core/types';
-import type { Clock, Faction, SaveData, StageId, UpgradeId } from '../core/types';
+import type {
+  Clock,
+  Faction,
+  SaveData,
+  StageId,
+  StageRecord,
+  UpgradeId,
+} from '../core/types';
 import {
   STARTING_STAGES,
   clampLevel,
@@ -32,6 +41,7 @@ export const SAVE_KEY = 'frontline-runner:save:v1';
 
 /** Sanity caps so a corrupted save can never produce absurd numbers. */
 const MAX_WAR_BONDS = 1_000_000;
+const MAX_COUNTER = 1_000_000;
 
 export type PurchaseResult =
   | { readonly ok: true; readonly level: number; readonly cost: number }
@@ -56,13 +66,31 @@ function clampBonds(value: unknown): number {
   return Math.max(0, Math.min(MAX_WAR_BONDS, Math.trunc(numeric)));
 }
 
+/** Counter for per-node history fields. */
+function clampCount(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(MAX_COUNTER, Math.trunc(numeric)));
+}
+
 function freezeSave(save: SaveData): SaveData {
+  const records: Record<string, StageRecord> = {};
+  for (const [id, record] of Object.entries(save.records)) {
+    records[id] = Object.freeze({ ...record });
+  }
   return Object.freeze({
     ...save,
     unlockedStages: Object.freeze([...save.unlockedStages]),
     upgrades: Object.freeze({ ...save.upgrades }),
     settings: Object.freeze({ ...save.settings }),
+    records: Object.freeze(records),
   });
+}
+
+/** Per-node figures a run reports back to the save file. */
+export interface RunReport {
+  readonly casualties: number;
+  readonly troopsRemaining: number;
 }
 
 export class GameStorage {
@@ -178,18 +206,44 @@ export class GameStorage {
     return true;
   }
 
-  /** Award bonds for a cleared stage and unlock the next one. */
-  completeStage(id: StageId, rewardBonds: number): void {
+  /** Award bonds for a cleared stage, unlock the next one, record the win. */
+  completeStage(id: StageId, rewardBonds: number, report?: RunReport): void {
     const next = nextStageId(id);
     this.mutate((current) => {
       const stages = next && !current.unlockedStages.includes(next)
         ? [...current.unlockedStages, next]
         : [...current.unlockedStages];
+      const previous = current.records[id] ?? EMPTY_STAGE_RECORD;
+      const record: StageRecord = Object.freeze({
+        wins: previous.wins + 1,
+        losses: previous.losses,
+        casualties: previous.casualties + Math.max(0, Math.trunc(report?.casualties ?? 0)),
+        bestTroops: Math.max(previous.bestTroops, Math.trunc(report?.troopsRemaining ?? 0)),
+      });
       return {
         ...current,
         warBonds: clampBonds(current.warBonds + clampBonds(rewardBonds)),
         unlockedStages: stages,
+        records: { ...current.records, [id]: record },
       };
+    });
+  }
+
+  /**
+   * Record a defeat. No bonds, no unlock — but the map marks the ground as
+   * contested so the player can see which node keeps stopping them.
+   */
+  recordLoss(id: StageId, report?: RunReport): void {
+    if (!isStageId(id)) return;
+    this.mutate((current) => {
+      const previous = current.records[id] ?? EMPTY_STAGE_RECORD;
+      const record: StageRecord = Object.freeze({
+        wins: previous.wins,
+        losses: previous.losses + 1,
+        casualties: previous.casualties + Math.max(0, Math.trunc(report?.casualties ?? 0)),
+        bestTroops: previous.bestTroops,
+      });
+      return { ...current, records: { ...current.records, [id]: record } };
     });
   }
 
@@ -322,6 +376,21 @@ export class GameStorage {
         ? (source.settings as Record<string, unknown>)
         : {};
 
+    const rawRecords =
+      typeof source.records === 'object' && source.records !== null
+        ? (source.records as Record<string, unknown>)
+        : {};
+    const records: Record<string, StageRecord> = {};
+    for (const [id, value] of Object.entries(rawRecords)) {
+      if (!isStageId(id) || !isStageRecord(value)) continue;
+      records[id] = {
+        wins: clampCount(value.wins),
+        losses: clampCount(value.losses),
+        casualties: clampCount(value.casualties),
+        bestTroops: clampCount(value.bestTroops),
+      };
+    }
+
     const save: SaveData = {
       version: Number.isFinite(Number(source.version)) ? Number(source.version) : SAVE_VERSION,
       faction,
@@ -329,6 +398,7 @@ export class GameStorage {
       warBonds: clampBonds(source.warBonds),
       upgrades,
       settings: { muted: rawSettings.muted === true },
+      records,
       updatedAt: Number.isFinite(Number(source.updatedAt)) ? Number(source.updatedAt) : fresh.updatedAt,
     };
     return this.migrate(save, raw);

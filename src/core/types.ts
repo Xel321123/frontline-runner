@@ -43,6 +43,32 @@ export function isUpgradeId(value: unknown): value is UpgradeId {
 /** Zero-based level per upgrade track (see `progression.ts` for max levels). */
 export type UpgradeLevels = Record<UpgradeId, number>;
 
+/**
+ * What happened to a node, kept so the campaign map can show cleared ground
+ * (green), contested ground (red) and progress stats without a network call.
+ */
+export interface StageRecord {
+  readonly wins: number;
+  readonly losses: number;
+  /** Troops lost across every attempt at this node. */
+  readonly casualties: number;
+  /** Best troops remaining on a win (0 until the node is cleared). */
+  readonly bestTroops: number;
+}
+
+export type StageRecords = Record<StageId, StageRecord>;
+
+export const EMPTY_STAGE_RECORD: StageRecord = {
+  wins: 0,
+  losses: 0,
+  casualties: 0,
+  bestTroops: 0,
+};
+
+export function isStageRecord(value: unknown): value is Partial<StageRecord> {
+  return typeof value === 'object' && value !== null;
+}
+
 export interface Settings {
   readonly muted: boolean;
 }
@@ -58,6 +84,8 @@ export interface SaveData {
   readonly warBonds: number;
   readonly upgrades: UpgradeLevels;
   readonly settings: Settings;
+  /** Per-node history. Absent in older saves — readers must default it. */
+  readonly records: StageRecords;
   /** Epoch milliseconds of the last mutation. */
   readonly updatedAt: number;
 }
@@ -73,6 +101,7 @@ export function createFreshSave(now: number, startingStages: readonly StageId[])
     warBonds: 0,
     upgrades: { firepower: 0, armour: 0, mobility: 0, medkit: 0 },
     settings: { muted: false },
+    records: {},
     updatedAt: now,
   };
 }

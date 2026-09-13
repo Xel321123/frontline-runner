@@ -1,9 +1,11 @@
 /**
- * Run tuning constants. Pure numbers — no DOM, no imports.
+ * Run tuning constants. Pure numbers — no DOM, no browser APIs.
  *
  * Everything is expressed in **logical units** (the fixed 1280x720 game space)
  * and **seconds**, so the simulation behaves identically on every device.
  */
+
+import { BASE_SQUAD_TROOPS } from '../core/progression';
 
 export const FIXED_DT = 1 / 60;
 /** Simulation steps allowed per frame before the backlog is dropped. */
@@ -25,7 +27,7 @@ export const SQUAD_LERP_RATE = 9;
 /** Soldiers actually drawn; the HUD number is the true count. */
 export const SQUAD_MAX_DRAWN = 12;
 
-export const BASE_SQUAD = 3;
+export const BASE_SQUAD = BASE_SQUAD_TROOPS;
 export const MAX_TROOPS = 30;
 
 // --- world ------------------------------------------------------------------
@@ -75,11 +77,15 @@ export const LEVEL_LENGTH_BASE = 8200;
 export const LEVEL_LENGTH_PER_TIER = 130;
 export const GATE_INTERVAL_PX = 1500;
 
-// --- upgrade effects (see core/progression.ts for the tracks) ---------------
-export const DAMAGE_PER_FIREPOWER_LEVEL = 0.15;
-export const FIRE_RATE_PER_MOBILITY_LEVEL = 0.06;
-export const TROOPS_PER_ARMOUR_LEVEL = 1;
-export const REVIVES_PER_MEDKIT_LEVEL = 1;
+// --- upgrade effects (defined with the tracks in core/progression.ts) -------
+// Re-exported so simulation code reads the same numbers the camp screen shows.
+export {
+  BASE_SQUAD_TROOPS,
+  DAMAGE_PER_FIREPOWER_LEVEL,
+  FIRE_RATE_PER_MOBILITY_LEVEL,
+  REVIVES_PER_MEDKIT_LEVEL,
+  TROOPS_PER_ARMOUR_LEVEL,
+} from '../core/progression';
 
 // --- popups -----------------------------------------------------------------
 export const POPUP_LIFE = 1.1;

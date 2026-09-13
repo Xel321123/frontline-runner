@@ -2,12 +2,12 @@
  * Web/PWA entry point.
  *
  * The only file that knows it is running in a browser. A Capacitor build would
- * call `startApp` from its own entry after `Capacitor` setup — see
+ * call `startShell` from its own entry after `Capacitor` setup — see
  * `docs/NATIVE_PORTABILITY.md`.
  */
 
 import './style.css';
-import { startApp } from './app/Boot';
+import { startShell } from './app/shell';
 
 const root = document.querySelector<HTMLElement>('#app');
 
@@ -25,7 +25,7 @@ syncOrientationNotice();
 window.addEventListener('resize', syncOrientationNotice);
 window.addEventListener('orientationchange', syncOrientationNotice);
 
-startApp(root).catch((error: unknown) => {
+startShell(root).catch((error: unknown) => {
   console.error('[boot] failed', error);
   root.innerHTML = `<div class="fatal"><h1>Boot failed</h1><pre>${String(
     error instanceof Error ? error.stack ?? error.message : error,

@@ -23,7 +23,8 @@ src/render/     Canvas 2D drawing only: parallax, sprite compositing, HUD.
 src/platform/   the ONLY place that touches document / window / screen /
                 localStorage / ResizeObserver.
                     ▲
-src/app/        composition root (Boot.ts) + the run loop (Play.ts).
+src/app/        composition root: `shell.ts` (screens, navigation, run
+                lifecycle) + `screens.ts` (markup) + `Play.ts` (run loop).
 src/main.ts     the only file that knows it is a browser page.
 ```
 

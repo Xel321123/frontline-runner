@@ -4,23 +4,34 @@ An offline-first, landscape **PWA** built with Vite + TypeScript + Canvas 2D,
 structured so it can be wrapped in **@capacitor/core** for iOS/Android later
 without restructuring.
 
-> **Status: step 3 — the runner engine is playable.** Step 1 delivered the PWA
-> scaffold, asset pipeline and engine subsystems; step 2 the historical campaign
-> and weapon database; step 3 the side-scrolling run itself (parallax, squad,
-> hazards, crates, math gates, end-zone bunker) with progression wired back into
-> the save file.
+> **Status: step 4 — screens, campaign flow and release.** Step 1 delivered the
+> PWA scaffold, asset pipeline and engine subsystems; step 2 the historical
+> campaign and weapon database; step 3 the runner engine; step 4 the screen
+> flow (title → campaign map → briefing → run → result → camp), the full local
+> progression loop, and the GitHub Pages release.
+
+## Screens
+
+| Screen | What it does |
+| --- | --- |
+| **Title** | Faction selection (Allies / Axis) with per-campaign totals, sound toggle, collapsible diagnostics |
+| **Campaign map** | The Europe SVG with all 30 node coordinates plotted: **grey** locked, **gold** next objective, **green** cleared, **red** contested (a node that has beaten you). Clicking a node opens its briefing |
+| **Briefing modal** | Authentic two-sentence history, theatre, grid reference, strongpoint + HP, enemy tier, reward and the node's own record, with a Deploy button |
+| **Camp / Armoury modal** | Active weapon with full stats, the resulting loadout numbers, and the upgrade tracks (Starting Squad, Damage, Fire Rate, Field Medkit) bought with war bonds |
+| **Victory / Defeat modal** | War bonds earned, troops remaining, casualties, infantry killed, crates collected, troops raised, and the newly unlocked node |
+| **Play** | The runner itself, letterboxed into the available space |
 
 ## Play
 
-`npm run dev` (or the deployed Pages site), pick a faction, then **deploy**.
+`npm run dev` (or the deployed Pages site), pick a side, then deploy a sector.
 
 | Control | Action |
 | --- | --- |
 | drag / pointer | the squad lerps to the pointer's Y (vertical only) |
 | `W`/`S`, `↑`/`↓` | keyboard equivalent |
 | `R` | redeploy a fresh run |
-| `ESC` | back to base |
-| `Enter` (at base) | deploy |
+| `ESC` | close the panel / back to base |
+| `Enter` (at the map) | deploy the current sector |
 
 - **Display:** fixed **1280×720** internal resolution, 16:9 locked, letterboxed
   into any canvas size; manifest locks landscape for installed PWAs.
@@ -64,9 +75,22 @@ src/game/                pure simulation: constants, seeded rng, level layout,
                          entities, Simulation, loadout
 src/render/              Canvas 2D: parallax Background, UnitSprites (crops and
                          composites the character parts), RunRenderer + HUD
+src/app/shell.ts         screens, navigation and the run lifecycle (one state
+                         machine, one delegated click listener)
+src/app/screens.ts       screen markup as pure functions of the save file
 src/app/Play.ts          the run loop: rAF + 1/60 s fixed steps, input, audio
                          policy, win/lose → save file
 ```
+
+## Progression & offline
+
+Everything persists to one `localStorage` key (`frontline-runner:save:v1`):
+faction, unlocked sectors, war bonds, upgrade levels, per-node records
+(wins/losses/casualties/best troops) and settings. Nothing else is stored, and
+**the game makes no network calls at all** — sprites, the map and the audio are
+all local, and the service worker precaches them for offline play. Verified by
+auditing `performance.getEntriesByType('resource')` during a full run: every
+request is same-origin, zero external hosts.
 
 `npm run check:sim` runs the real `Simulation` in Node with three autopilots
 (superhuman, human-reaction, do-nothing) over live campaign nodes, asserts every
@@ -183,8 +207,20 @@ filters for shots/hits/explosions, short blips for UI. No audio files, nothing
 to cache, nothing to license. The context is created on the first user gesture
 (browser autoplay policy) and every `play()` is a safe no-op before that.
 
+## Deployment
+
+`.github/workflows/deploy.yml` runs on every push to `main`: install → typecheck
+→ `vite build` (PWA + `404.html` fallback) → upload `dist/` → publish to GitHub
+Pages. The site lives at:
+
+**https://xel321123.github.io/frontline-runner/**
+
+`base` is `/frontline-runner/` to match that project path; `npm run build:native`
+switches to relative paths for a Capacitor bundle.
+
 ## Next step
 
-Polish and content: more weapons/loadout choice, per-node art passes, boss
-variants (tank vs bunker), and a settings screen for volume and control
-sensitivity. The engine boundaries are in place so any of those is additive.
+Polish and content: more weapons with a loadout select, per-node art passes, boss
+variants (tank vs bunker), a settings screen for volume/sensitivity, and an
+optional cloud sync behind the same `KeyValueBackend` seam. The engine
+boundaries are in place so any of those is additive.
