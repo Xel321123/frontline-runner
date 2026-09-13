@@ -1,7 +1,7 @@
 {
   "name": "frontline-runner",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Frontline Runner — offline-first landscape PWA (Vite + TypeScript + Canvas 2D), portable to iOS/Android via Capacitor.",
   "engines": {
