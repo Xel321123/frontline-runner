@@ -4,26 +4,62 @@ An offline-first, landscape **PWA** built with Vite + TypeScript + Canvas 2D,
 structured so it can be wrapped in **@capacitor/core** for iOS/Android later
 without restructuring.
 
-> **Status: step 1 — foundations.** Scaffold, PWA/offline setup, asset pipeline
-> and engine subsystems (save file, procedural audio, procedural sprite
-> fallbacks). **There is no gameplay loop yet** — the boot screen is a static
-> systems check.
+> **Status: step 2 — campaign and weapon database.** Step 1 delivered the
+> scaffold, PWA/offline setup, asset pipeline and engine subsystems; step 2 adds
+> the 60-node historical campaign and the 14-weapon stat database. **There is
+> still no gameplay loop** — the boot screen is a static systems/data check that
+> plots the campaign coordinates over the real theatre map.
 
 ## Quick start
 
 ```bash
 npm install
 npm run dev          # http://localhost:5173/frontline-runner/
+npm run check:data   # validate the campaign/weapon database
 npm run build        # typecheck + PWA build + 404 fallback
 npm run preview      # serve dist/ at http://localhost:4173/frontline-runner/
 npm run icons        # regenerate public/icons/*.png
 npm run build:native # relative-base build for Capacitor
 ```
 
+## Campaign & weapon database
+
+`src/data/campaignData.ts` is the single source of truth — pure data, no
+balance maths:
+
+- **60 campaign nodes**, 30 per faction, in `ALLIED_CAMPAIGN` / `AXIS_CAMPAIGN`,
+  each `{ id, name, year, theater, coords, bossName, bossHp, briefing }`.
+  Ids are `allied-01`…`allied-30` / `axis-01`…`axis-30`, ordered, and the id is
+  what the save file stores.
+- **`coords`** are percentages of the theatre map (0–100, origin top-left) and
+  line up with `public/assets/maps/europe_blank_laea.svg` — the boot frame plots
+  them to prove it.
+- **14 weapons** (`ALLIED_WEAPONS` / `AXIS_WEAPONS`) with `id, name, faction,
+  damage, fireRate, spread, minLevel` plus `caliber, year, magazineSize,
+  reloadTime, automatic`. `minLevel` is the campaign node that unlocks the
+  weapon. The brief's final slot ("M2 Browning/Bazooka",
+  "Panzerschreck/Flammenwerfer 35") ships as two entries each, because a
+  belt-fed HMG and a rocket launcher cannot share one stat block.
+- **Briefings** are exactly two sentences of neutral military history per node —
+  the data checker enforces the count.
+
+`src/core/progression.ts` layers balance on top: enemy tier per node from the
+shipped character-pack tiers, war bonds rising 60 → 495 per campaign, the
+upgrade tracks, and `isStageId` / `nextStageId`, which follow the node's own
+campaign so clearing `allied-30` does not unlock an Axis node.
+
+`npm run check:data` imports the real TypeScript modules and asserts the whole
+contract: 30 + 30 nodes, id format and ordering, coords inside the map, two
+sentences per briefing, monotonic boss HP and rewards, sane weapon stats, and
+correct progression wiring. It is deliberately not part of `npm run build`
+because it relies on Node's built-in TypeScript support.
+
 ## Architecture
 
 ```
 src/
+  data/        historical database: 60 campaign nodes + 14 weapons
+               (pure data, no balance logic, no DOM)
   core/        pure domain: types, campaign/economy tables, asset manifest
                (no DOM, no browser globals — unit-testable in Node)
   engine/      subsystems behind interfaces
@@ -97,6 +133,7 @@ to cache, nothing to license. The context is created on the first user gesture
 
 ## Next step
 
-Step 2: the gameplay loop (renderer, entities, input) consuming this scaffold —
-`AssetLoader.all()` for sprites, `GameStorage` for progression, `SoundManager`
-for feedback.
+Step 3: the gameplay loop (renderer, entities, input) consuming this scaffold —
+`AssetLoader.all()` for sprites, the campaign node's `tier` for enemy art,
+`GameStorage` for progression, `SoundManager` for feedback, and the weapon
+table for loadouts.

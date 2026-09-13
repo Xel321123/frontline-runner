@@ -151,6 +151,26 @@ body {
   white-space: nowrap;
 }
 
+.row .key.locked::after {
+  content: " 🔒";
+}
+
+.mission-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.briefing {
+  margin: 8px 0 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--accent);
+  color: #c9d4c2;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .row .val {
   text-align: right;
   overflow-wrap: anywhere;

@@ -9,10 +9,11 @@
  * Native (Capacitor) builds reuse everything below the `startApp` call.
  */
 
-import type { Faction } from '../core/types';
+import type { Faction, SaveData } from '../core/types';
 import { FACTION_INFO } from '../core/types';
-import { STAGES } from '../core/progression';
+import { STAGES_PER_CAMPAIGN, campaignProgress } from '../core/progression';
 import { ASSET_MANIFEST } from '../core/assets';
+import { CAMPAIGNS, CAMPAIGN_NODES, THEATERS, WEAPONS, weaponsForFaction } from '../data/campaignData';
 import type { AssetLoadReport, LoadedSprite, SoundName } from '../engine';
 import { PALETTE, createAssetLoader, createGameStorage, SoundManager } from '../engine';
 import type { CanvasSurface, OrientationLockResult } from '../platform/Display';
@@ -53,17 +54,19 @@ export async function startApp(root: HTMLElement): Promise<void> {
   const immersiveEl = mustFind<HTMLButtonElement>(root, '#immersive');
   const resetEl = mustFind<HTMLButtonElement>(root, '#reset');
   const hintEl = mustFind<HTMLElement>(root, '#hint');
+  const missionEl = mustFind<HTMLElement>(root, '#mission');
+  const armouryEl = mustFind<HTMLElement>(root, '#armoury');
 
   let report: AssetLoadReport | null = null;
   let orientationLock: OrientationLockResult | 'idle' = 'idle';
 
   const surface = createCanvasSurface(stageEl);
-  surface.onDraw = (s) => drawVerification(s, loader.all());
+  surface.onDraw = (s) => drawVerification(s, loader.all(), storage.snapshot());
 
   // ---------------------------------------------------------------- status
   function rows(): readonly StatusRow[] {
     const save = storage.snapshot();
-    const unlocked = save.unlockedStages.length;
+    const progress = save.faction ? campaignProgress(save.faction, save.unlockedStages) : null;
     const upgrades = Object.entries(save.upgrades)
       .filter(([, level]) => level > 0)
       .map(([id, level]) => `${id} ${level}`)
@@ -71,6 +74,11 @@ export async function startApp(root: HTMLElement): Promise<void> {
     const fallbacks = report ? report.procedural : 0;
     const soundLabel = `${sound.state}${sound.muted ? ' · muted' : ''}`;
     const sw = describeServiceWorker();
+    const nextLabel = progress
+      ? progress.next
+        ? `${progress.next.name} (${progress.next.year})`
+        : 'campaign complete'
+      : '—';
     return [
       {
         label: 'save',
@@ -79,9 +87,14 @@ export async function startApp(root: HTMLElement): Promise<void> {
       },
       {
         label: 'campaign',
-        value: `faction ${save.faction ?? '—'} · stages ${unlocked}/${STAGES.length} · bonds ${save.warBonds}${
+        value: `faction ${save.faction ?? '—'} · ${progress ? `${progress.unlocked}/${progress.total}` : `0/${STAGES_PER_CAMPAIGN}`} nodes · next ${nextLabel} · bonds ${save.warBonds}${
           upgrades ? ` · ${upgrades}` : ''
         }`,
+      },
+      {
+        label: 'database',
+        value: `${WEAPONS.length} weapons · ${CAMPAIGN_NODES.length} campaign nodes · ${THEATERS.length} theatres`,
+        tone: 'ok',
       },
       {
         label: 'audio',
@@ -142,6 +155,55 @@ export async function startApp(root: HTMLElement): Promise<void> {
     ).join('');
   }
 
+  /** The next playable node for the chosen faction, straight from the database. */
+  function renderMission(): void {
+    const save = storage.snapshot();
+    const progress = save.faction ? campaignProgress(save.faction, save.unlockedStages) : null;
+    const node = progress?.next;
+    if (!node) {
+      missionEl.innerHTML =
+        '<p class="fine">Choose a faction to load its campaign from the database.</p>';
+      return;
+    }
+    missionEl.innerHTML = `
+      <div class="mission-title">${escapeHtml(node.name)} <span class="mono">${escapeHtml(
+        node.year,
+      )}</span></div>
+      <div class="row"><span class="key">theatre</span><span class="val">${escapeHtml(
+        node.theater,
+      )} · x ${node.coords.x}% y ${node.coords.y}%</span></div>
+      <div class="row"><span class="key">boss</span><span class="val">${escapeHtml(
+        node.bossName,
+      )} · ${node.bossHp} hp</span></div>
+      <div class="row"><span class="key">node</span><span class="val mono">${escapeHtml(
+        node.id,
+      )} · tier ${node.tier} · ${node.rewardBonds} bonds</span></div>
+      <p class="briefing">${escapeHtml(node.briefing)}</p>`;
+  }
+
+  /** The faction's weapon table, with unlock state derived from progress. */
+  function renderArmoury(): void {
+    const save = storage.snapshot();
+    if (!save.faction) {
+      armouryEl.innerHTML = '<p class="fine">Weapon stats come from campaignData.ts.</p>';
+      return;
+    }
+    const reached = campaignProgress(save.faction, save.unlockedStages).unlocked;
+    armouryEl.innerHTML = weaponsForFaction(save.faction)
+      .map((weapon) => {
+        const unlocked = weapon.minLevel <= reached;
+        const stats = `${weapon.damage} dmg · ${weapon.fireRate}/s · ±${weapon.spread}° · ${weapon.magazineSize} ${
+          weapon.magazineSize === 1 ? 'round' : 'rounds'
+        }`;
+        return `<div class="row"><span class="key${unlocked ? '' : ' locked'}">${escapeHtml(
+          weapon.name,
+        )}</span><span class="val${unlocked ? ' ok' : ''}">${
+          unlocked ? stats : `node ${weapon.minLevel} · ${stats}`
+        }</span></div>`;
+      })
+      .join('');
+  }
+
   // ---------------------------------------------------------------- events
   factionEl.addEventListener('click', (event) => {
     const target = (event.target as HTMLElement).closest<HTMLElement>('[data-faction]');
@@ -152,6 +214,8 @@ export async function startApp(root: HTMLElement): Promise<void> {
     storage.setFaction(value as Faction);
     renderFaction();
     renderStatus();
+    renderMission();
+    renderArmoury();
     surface.requestRedraw();
   });
 
@@ -190,11 +254,17 @@ export async function startApp(root: HTMLElement): Promise<void> {
     storage.reset();
     renderFaction();
     renderStatus();
+    renderMission();
+    renderArmoury();
     surface.requestRedraw();
     hintEl.textContent = 'save wiped';
   });
 
-  storage.subscribe(() => renderStatus());
+  storage.subscribe(() => {
+    renderStatus();
+    renderMission();
+    renderArmoury();
+  });
 
   // A single window-level listener is enough to satisfy the browser's
   // "audio starts from a user gesture" rule.
@@ -209,6 +279,8 @@ export async function startApp(root: HTMLElement): Promise<void> {
   // ---------------------------------------------------------------- boot
   renderFaction();
   renderStatus();
+  renderMission();
+  renderArmoury();
 
   report = await loader.load();
   progressEl.textContent = `${report.loaded}/${report.total} assets`;
@@ -222,39 +294,80 @@ export async function startApp(root: HTMLElement): Promise<void> {
   }
 }
 
-/** One static frame — asset proof, not a game. */
-function drawVerification(surface: CanvasSurface, sprites: readonly LoadedSprite[]): void {
+/** One static frame — campaign data + asset proof, not a game. */
+function drawVerification(
+  surface: CanvasSurface,
+  sprites: readonly LoadedSprite[],
+  save: SaveData,
+): void {
   const { ctx, width, height } = surface;
   ctx.save();
   ctx.fillStyle = PALETTE.ink;
   ctx.fillRect(0, 0, width, height);
 
+  const pad = Math.round(width * 0.022);
+  const spriteBand = Math.round(height * 0.17);
+  const mapAreaW = Math.round(width * 0.54);
+  const mapAreaH = height - spriteBand - pad * 2;
+
   const map = sprites.find((sprite) => sprite.key === 'map.europe');
   const mapLayer = map ? map.layers[0] : undefined;
-  if (map && mapLayer) {
-    const box = fitContain(map.width, map.height, width, height * 0.72);
+  if (map && mapLayer && mapAreaH > 80) {
+    const box = fitContain(map.width, map.height, mapAreaW, mapAreaH);
+    const bx = pad + box.x;
+    const by = pad + box.y;
     ctx.globalAlpha = 0.5;
-    ctx.drawImage(mapLayer.image, box.x, box.y, box.w, box.h);
+    ctx.drawImage(mapLayer.image, bx, by, box.w, box.h);
     ctx.globalAlpha = 1;
+    // Darken the artwork so the plotted nodes read against pale land and sea.
+    ctx.fillStyle = 'rgba(8,11,9,0.55)';
+    ctx.fillRect(bx, by, box.w, box.h);
+    ctx.strokeStyle = 'rgba(140,160,145,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx + 0.5, by + 0.5, box.w - 1, box.h - 1);
+    drawCampaignNodes(ctx, save, bx, by, box.w, box.h);
   }
-  ctx.fillStyle = 'rgba(13,18,16,0.62)';
-  ctx.fillRect(0, 0, width, height);
 
-  const pad = Math.round(width * 0.03);
+  // ---- data column, right of the map
+  const tx = pad * 2 + mapAreaW;
+  const titleSize = Math.round(Math.min(width, height) / 17);
+  const bodySize = Math.round(titleSize * 0.44);
+  let ty = pad;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
+
   ctx.fillStyle = '#e6ecdd';
-  ctx.font = `700 ${Math.round(Math.min(width, height) / 12)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-  ctx.fillText('FRONTLINE RUNNER', pad, pad);
+  ctx.font = `700 ${titleSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  ctx.fillText('FRONTLINE', tx, ty);
+  ty += titleSize * 1.05;
+  ctx.fillText('RUNNER', tx, ty);
+  ty += titleSize * 1.3;
 
   ctx.fillStyle = PALETTE.warn;
-  ctx.font = `${Math.round(Math.min(width, height) / 26)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-  ctx.fillText('STEP 1 · SYSTEMS CHECK — NO GAMEPLAY LOOP YET', pad, pad * 2.6);
+  ctx.font = `700 ${bodySize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  ctx.fillText('STEP 2 · DATABASE', tx, ty);
+  ty += bodySize * 1.7;
 
-  // Sprite proof row: every manifest sprite drawn from whatever we loaded.
-  const cell = Math.min((width - pad * 2) / Math.max(1, sprites.length), height * 0.3);
-  const rowY = height * 0.5;
-  ctx.font = `${Math.round(cell * 0.15)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  const lines = [
+    `${CAMPAIGN_NODES.length} campaign nodes (30 / faction)`,
+    `${WEAPONS.length} weapons with stats and minLevel`,
+    `${THEATERS.length} theatres · boss HP 1400-5750`,
+    `coords plotted from campaignData.ts`,
+    `ring = next mission · dim = locked`,
+    `orange outline = procedural asset fallback`,
+    `gameplay loop: NOT STARTED`,
+  ];
+  ctx.font = `${bodySize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  for (const [index, line] of lines.entries()) {
+    ctx.fillStyle = index === lines.length - 1 ? PALETTE.warn : 'rgba(200,215,200,0.68)';
+    ctx.fillText(line, tx, ty);
+    ty += bodySize * 1.55;
+  }
+
+  // ---- sprite proof row: every manifest sprite from whatever we loaded
+  const cell = Math.min((width - pad * 2) / Math.max(1, sprites.length), spriteBand * 0.84);
+  const rowY = height - spriteBand;
+  ctx.font = `${Math.round(cell * 0.17)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
   ctx.textAlign = 'center';
   sprites.forEach((sprite, index) => {
     const layer = sprite.layers[0];
@@ -269,16 +382,99 @@ function drawVerification(surface: CanvasSurface, sprites: readonly LoadedSprite
       ctx.strokeRect(x - 2, y - 2, box.w + 4, box.h + 4);
     }
     ctx.fillStyle = sprite.status === 'procedural' ? PALETTE.warn : 'rgba(200,215,200,0.6)';
-    ctx.fillText(sprite.key.replace('unit.', ''), x + box.w / 2, y + box.h + 6);
+    ctx.fillText(shortLabel(sprite.key), x + box.w / 2, y + box.h + 4);
   });
 
+  ctx.restore();
+}
+
+/** `unit.allied.t1` → `allied t1`, `map.europe` → `map`. */
+function shortLabel(key: string): string {
+  if (key.startsWith('unit.')) return key.slice(5).replace('.', ' ');
+  return key.split('.')[0] ?? key;
+}
+
+/**
+ * Plot a faction's campaign nodes on the theatre map using their stored
+ * percentage coords, marking what the save has unlocked and ringing the next
+ * mission. This is the coordinate data checked against the real map artwork.
+ */
+function drawCampaignNodes(
+  ctx: CanvasRenderingContext2D,
+  save: SaveData,
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
+): void {
+  const faction: Faction = save.faction ?? 'allied';
+  const nodes = CAMPAIGNS[faction];
+  const nextNode = nodes.find((node) => save.unlockedStages.includes(node.id));
+  const radius = Math.max(2.5, bw * 0.0042);
+  const unlockedFill = faction === 'allied' ? '#c9e06a' : '#8fc4ff';
+
+  ctx.save();
+  for (const [index, node] of nodes.entries()) {
+    const x = bx + (node.coords.x / 100) * bw;
+    const y = by + (node.coords.y / 100) * bh;
+    const unlocked = save.unlockedStages.includes(node.id);
+
+    // Route line to the following node, so the campaign reads as a path.
+    const following = nodes[index + 1];
+    if (following) {
+      ctx.strokeStyle = 'rgba(210,225,190,0.22)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(bx + (following.coords.x / 100) * bw, by + (following.coords.y / 100) * bh);
+      ctx.stroke();
+    }
+
+    ctx.beginPath();
+    ctx.arc(x, y, unlocked ? radius : radius * 0.8, 0, Math.PI * 2);
+    ctx.fillStyle = unlocked ? unlockedFill : 'rgba(225,235,220,0.42)';
+    ctx.fill();
+
+    if (node.id === nextNode?.id) {
+      ctx.strokeStyle = PALETTE.warn;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, radius * 2.8, 0, Math.PI * 2);
+      ctx.stroke();
+
+      const label = `${node.name} · ${node.year} · ${node.bossName}`;
+      const fontSize = Math.max(9, Math.round(bw * 0.017));
+      ctx.font = `700 ${fontSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+      const rightSide = x < bx + bw * 0.6;
+      const offset = radius * 3.6;
+      const textX = rightSide ? x + offset : x - offset;
+      const textY = y - radius * 3.2;
+
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      const textW = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(8,11,9,0.82)';
+      ctx.fillRect(
+        (rightSide ? textX : textX - textW) - 4,
+        textY - 3,
+        textW + 8,
+        fontSize + 8,
+      );
+      ctx.fillStyle = PALETTE.warn;
+      ctx.fillText(label, rightSide ? textX : textX - textW, textY);
+    }
+  }
+
+  const legend = `${faction} campaign · ${nodes.length} nodes plotted`;
+  const legendSize = Math.max(9, Math.round(bw * 0.016));
+  ctx.font = `${legendSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
   ctx.textAlign = 'left';
-  ctx.fillStyle = 'rgba(200,215,200,0.5)';
-  ctx.fillText(
-    'orange outline = procedural Canvas 2D fallback (asset unavailable)',
-    pad,
-    rowY + cell + 28,
-  );
+  ctx.textBaseline = 'bottom';
+  const legendW = ctx.measureText(legend).width;
+  ctx.fillStyle = 'rgba(8,11,9,0.8)';
+  ctx.fillRect(bx + 6, by + bh - legendSize - 14, legendW + 12, legendSize + 10);
+  ctx.fillStyle = 'rgba(220,232,215,0.75)';
+  ctx.fillText(legend, bx + 12, by + bh - 8);
   ctx.restore();
 }
 
@@ -327,7 +523,7 @@ const SHELL_HTML = `
     <header class="bar">
       <div>
         <h1>Frontline Runner</h1>
-        <p class="sub">Step 1 · PWA scaffold, asset pipeline and engine foundations</p>
+        <p class="sub">Step 2 · historical campaign and weapon database (still no gameplay loop)</p>
       </div>
       <div class="bar-actions">
         <span id="progress" class="mono">assets 0/${ASSET_MANIFEST.length}</span>
@@ -342,14 +538,25 @@ const SHELL_HTML = `
 
       <aside class="panel">
         <section>
-          <h2>Systems</h2>
-          <div id="status-rows" class="rows"></div>
-        </section>
-
-        <section>
           <h2>Faction</h2>
           <div id="faction" class="chips"></div>
           <p class="fine">Persisted to the save file; reload to confirm the round-trip.</p>
+        </section>
+
+        <section>
+          <h2>Next mission</h2>
+          <div id="mission"></div>
+        </section>
+
+        <section>
+          <h2>Armoury</h2>
+          <div id="armoury" class="rows"></div>
+          <p class="fine">Unlock node comes from each weapon's <span class="mono">minLevel</span>.</p>
+        </section>
+
+        <section>
+          <h2>Systems</h2>
+          <div id="status-rows" class="rows"></div>
         </section>
 
         <section>

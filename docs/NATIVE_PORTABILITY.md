@@ -7,6 +7,8 @@ contract that keeps that true, plus the exact steps to add native targets.
 ## 1. Layer rules (enforced by imports, checked in review)
 
 ```
+src/data/       pure historical data (campaign nodes, weapon stats).
+                NO DOM, NO window, NO localStorage, NO AudioContext.
 src/core/       pure data + pure functions.
                 NO DOM, NO window, NO localStorage, NO AudioContext.
                     ▲                    ▲
@@ -21,8 +23,9 @@ src/app/        composition root (Boot.ts) — wires engine + platform together.
 src/main.ts     the only file that knows it is a browser page.
 ```
 
-`engine/` never imports from `app/` or `main.ts`; `core/` imports only itself.
-That is what makes the game logic testable in plain Node and portable verbatim.
+`data/` and `core/` import only each other; `engine/` never imports from `app/`
+or `main.ts`. That is what makes the game logic testable in plain Node and
+portable verbatim.
 
 ## 2. The one thing a native build must swap: the storage backend
 

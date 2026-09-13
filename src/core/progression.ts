@@ -1,16 +1,28 @@
 /**
- * Campaign and economy tables. Pure data + pure functions — no DOM, no I/O.
+ * Campaign and economy tables.
  *
- * Tiers come from the character pack that ships in `public/assets/characters/`
- * (the pack has no `t7`, hence the gap).
+ * Balance lives here; the history lives in `src/data/campaignData.ts`. The
+ * sixty campaign nodes are mapped into `StageDefinition`s (adding the per-stage
+ * enemy tier and war-bond reward) so the save layer validates against exactly
+ * the same ids the UI and renderer use.
  */
 import type { StageId, UpgradeId, UpgradeLevels } from './types';
+import { UNIT_TIERS } from './assets';
+import type { CampaignNode } from '../data/campaignData';
+import {
+  AXIS_CAMPAIGN,
+  ALLIED_CAMPAIGN,
+  CAMPAIGNS,
+  CAMPAIGN_LENGTH,
+  getCampaignNode,
+  nextCampaignNode,
+  stageIndexOf,
+} from '../data/campaignData';
 
-export interface StageDefinition {
-  readonly id: StageId;
-  /** 1-based position in the campaign. */
+export interface StageDefinition extends CampaignNode {
+  readonly faction: 'allied' | 'axis';
+  /** 1-based position within the faction's own campaign. */
   readonly index: number;
-  readonly name: string;
   readonly region: string;
   /** Character-pack tier used by the enemies in this stage. */
   readonly tier: number;
@@ -18,19 +30,57 @@ export interface StageDefinition {
   readonly rewardBonds: number;
 }
 
-export const STAGES: readonly StageDefinition[] = [
-  { id: 't1', index: 1, name: 'Normandy Beachhead', region: 'France', tier: 1, rewardBonds: 60 },
-  { id: 't2', index: 2, name: 'Bocage Breakout', region: 'France', tier: 2, rewardBonds: 75 },
-  { id: 't3', index: 3, name: 'Ardennes Ridge', region: 'Belgium', tier: 3, rewardBonds: 90 },
-  { id: 't4', index: 4, name: 'Rhine Crossing', region: 'Germany', tier: 4, rewardBonds: 110 },
-  { id: 't5', index: 5, name: 'Ruhr Pocket', region: 'Germany', tier: 5, rewardBonds: 135 },
-  { id: 't6', index: 6, name: 'Elbe Bridgehead', region: 'Germany', tier: 6, rewardBonds: 160 },
-  { id: 't8', index: 7, name: 'Alpine Redoubt', region: 'Austria', tier: 8, rewardBonds: 200 },
-  { id: 't9', index: 8, name: 'Final Command Post', region: 'Austria', tier: 9, rewardBonds: 250 },
-];
+/**
+ * Four nodes per character-pack tier, walking the eight tiers the pack ships
+ * (it has no `t7`, hence the gap in `UNIT_TIERS`).
+ */
+const NODES_PER_TIER = 4;
 
-/** Only the first stage is playable on a fresh save. */
-export const STARTING_STAGES: readonly StageId[] = ['t1'];
+function tierForIndex(index: number): number {
+  const slot = Math.min(Math.floor(index / NODES_PER_TIER), UNIT_TIERS.length - 1);
+  return UNIT_TIERS[slot] ?? 1;
+}
+
+/** War bonds rise by 15 per node: 60 at Narvik, 495 at the Halbe Pocket. */
+function bondsForIndex(index: number): number {
+  return 60 + index * 15;
+}
+
+function toStage(node: CampaignNode, faction: 'allied' | 'axis', index: number): StageDefinition {
+  return {
+    ...node,
+    faction,
+    index: index + 1,
+    region: node.theater,
+    tier: tierForIndex(index),
+    rewardBonds: bondsForIndex(index),
+  };
+}
+
+export const ALLIED_STAGES: readonly StageDefinition[] = ALLIED_CAMPAIGN.map((node, index) =>
+  toStage(node, 'allied', index),
+);
+
+export const AXIS_STAGES: readonly StageDefinition[] = AXIS_CAMPAIGN.map((node, index) =>
+  toStage(node, 'axis', index),
+);
+
+/** Every campaign node, both factions, in play order. */
+export const STAGES: readonly StageDefinition[] = [...ALLIED_STAGES, ...AXIS_STAGES];
+
+export const STAGES_BY_FACTION = {
+  allied: ALLIED_STAGES,
+  axis: AXIS_STAGES,
+} as const satisfies Record<'allied' | 'axis', readonly StageDefinition[]>;
+
+/**
+ * A fresh save can start either campaign, so both opening nodes are unlocked
+ * from the beginning.
+ */
+export const STARTING_STAGES: readonly StageId[] = [
+  ALLIED_CAMPAIGN[0]?.id ?? 'allied-01',
+  AXIS_CAMPAIGN[0]?.id ?? 'axis-01',
+];
 
 const STAGE_BY_ID = new Map(STAGES.map((stage) => [stage.id, stage]));
 
@@ -42,12 +92,44 @@ export function isStageId(value: unknown): value is StageId {
   return typeof value === 'string' && STAGE_BY_ID.has(value);
 }
 
-/** Stage unlocked when `id` is cleared, or `undefined` at the end of the war. */
-export function nextStageId(id: StageId): StageId | undefined {
-  const stage = STAGE_BY_ID.get(id);
-  if (!stage) return undefined;
-  return STAGES[stage.index]?.id;
+/** Stages of one faction, in play order. */
+export function stagesForFaction(faction: 'allied' | 'axis'): readonly StageDefinition[] {
+  return STAGES_BY_FACTION[faction];
 }
+
+/**
+ * Stage unlocked when `id` is cleared. Follows the node's own campaign, so
+ * finishing the last Allied node does not unlock an Axis node.
+ */
+export function nextStageId(id: StageId): StageId | undefined {
+  return nextCampaignNode(id)?.id;
+}
+
+/** Number of campaign nodes in one faction's campaign. */
+export const STAGES_PER_CAMPAIGN = CAMPAIGN_LENGTH;
+
+/** How far through its campaign a save is, for the boot/menu readouts. */
+export function campaignProgress(
+  faction: 'allied' | 'axis',
+  unlockedStages: readonly StageId[],
+): {
+  readonly unlocked: number;
+  readonly total: number;
+  readonly next: StageDefinition | undefined;
+  readonly complete: boolean;
+} {
+  const stages = STAGES_BY_FACTION[faction];
+  const unlocked = stages.filter((stage) => unlockedStages.includes(stage.id));
+  const next = stages.find((stage) => unlockedStages.includes(stage.id));
+  return {
+    unlocked: unlocked.length,
+    total: stages.length,
+    next,
+    complete: unlocked.length === stages.length && stages.length > 0,
+  };
+}
+
+export { CAMPAIGNS, CAMPAIGN_LENGTH, getCampaignNode, stageIndexOf };
 
 export interface UpgradeDefinition {
   readonly id: UpgradeId;
