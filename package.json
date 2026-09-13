@@ -1,7 +1,7 @@
 {
   "name": "frontline-runner",
   "private": true,
-  "version": "1.3.0",
+  "version": "1.4.0",
   "type": "module",
   "description": "Frontline Runner — an offline-first landscape tug-of-war battlefield (Vite + TypeScript + Canvas 2D, 100% procedural graphics), portable to iOS/Android via Capacitor.",
   "engines": {

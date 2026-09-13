@@ -183,3 +183,9 @@ export async function enterFullscreen(): Promise<boolean> {
   await tryLockLandscape();
   return true;
 }
+
+/** True when the primary input is a finger, so keyboard hints can be hidden. */
+export function prefersTouch(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  return window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+}

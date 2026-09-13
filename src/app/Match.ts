@@ -1,60 +1,48 @@
 /**
  * MatchSession — the battle's composition root.
  *
- * Owns the fixed-timestep loop, the camera, the deployment-bar input, the
- * renderer and the audio policy, and is the only place where the pure
- * simulation meets the browser.
- *
- * Camera behaviour is the mobile centrepiece: the view is zoomed in on the
- * ground line and follows the fighting automatically, but a horizontal drag
- * pans it — held for a moment so you can study a flank, then eased back to the
- * action so you never lose the battle by looking away.
+ * Owns the fixed-timestep loop, the camera, the DOM HUD, the renderer and the
+ * audio policy. The canvas draws the world; every HUD element is DOM (see
+ * BattleHud), so the battle view stays borderless at any viewport size.
  */
 
+import { createBattleHud, type BattleHud, type BattleHudInfo } from './BattleHud';
 import {
-  createBattleInput,
-  type BattleInput,
-} from '../engine/Input';
-import type { GameStorage, SoundManager, SoundName } from '../engine';
-import { nextStageId, type StageDefinition } from '../core/progression';
+  createCanvasSurface,
+  prefersTouch,
+  enterFullscreen,
+  tryLockLandscape,
+  type CanvasSurface,
+} from '../platform/Display';
 import {
-  computeHudLayout,
-  hitControl,
-  hitDeploy,
-  hitLogistics,
-  kindForHotkey,
-  type HudLayout,
-} from '../game/hud';
-import { createMatchConfig } from '../game/match';
-import { TugSimulation } from '../game/TugSimulation';
-import type { MatchCommand, MatchStatus, SimEvent } from '../game/tugTypes';
-import type { UnitKind } from '../game/units';
-import type { CanvasSurface } from '../platform/Display';
-import {
-  DEFAULT_ZOOM_FACTOR,
-  ZOOM_IN_FACTOR,
   cameraAt,
   clampZoomFactor,
   createCamera,
+  DEFAULT_ZOOM_FACTOR,
+  ZOOM_IN_FACTOR,
   type Camera,
 } from '../platform/Viewport';
+import { createBattleInput, type BattleInput } from '../engine/Input';
+import type { GameStorage } from '../engine/Storage';
+import { SoundManager, type SoundName } from '../engine/SoundManager';
 import { BattleRenderer } from '../render/BattleRenderer';
-
-/** How long a manual pan is held before the camera eases back to the action. */
-const PAN_HOLD_SECONDS = 4;
-/** World pixels/second the camera eases at. */
-const FOLLOW_RATE = 2.2;
+import { createMatchConfig } from '../game/match';
+import { TugSimulation } from '../game/TugSimulation';
+import { kindForHotkey, type UnitKind } from '../game/units';
+import type { MatchCommand, MatchStatus, SimEvent } from '../game/tugTypes';
+import { FIXED_DT, VIEW_WIDTH } from '../game/constants';
+import { stageTagline } from '../game/stageInfo';
+import type { StageDefinition } from '../core/progression';
+import type { Faction, StageId } from '../core/types';
 
 export interface BattleOutcome {
-  readonly nodeId: string;
+  readonly nodeId: StageId;
   readonly nodeName: string;
   readonly year: string;
   readonly situation: string;
-  readonly status: Exclude<MatchStatus, 'running'>;
+  readonly status: Extract<MatchStatus, 'victory' | 'defeat'>;
   readonly lossReason: string;
-  /** Bonds banked for taking the sector (0 on a defeat). */
   readonly bondsAwarded: number;
-  /** Bonds picked up from enemy losses, banked win or lose. */
   readonly bondsCollected: number;
   readonly unitsDeployed: number;
   readonly unitsLost: number;
@@ -67,392 +55,342 @@ export interface BattleOutcome {
   readonly enemyBaseRemaining: number;
   readonly enemyBaseMax: number;
   readonly durationSeconds: number;
-  /** The node this victory opened, if any. */
   readonly unlockedStage: string | null;
 }
 
-export interface MatchSessionOptions {
-  readonly surface: CanvasSurface;
+export interface MatchHandlers {
+  readonly onExit: () => void;
+  readonly onFinish: (outcome: BattleOutcome) => void;
+}
+
+export interface MatchOptions {
+  readonly container: HTMLElement;
   readonly storage: GameStorage;
   readonly sound: SoundManager;
-  readonly faction: 'allied' | 'axis';
   readonly stage: StageDefinition;
-  readonly situation: string;
-  /** Leave the battle without a result (back to the map). */
-  readonly onExit: () => void;
-  /** Called exactly once, when the battle is decided. */
-  readonly onFinish: (outcome: BattleOutcome) => void;
-  /** Called when the pause state changes, so the shell can react. */
-  readonly onPauseChange?: (paused: boolean) => void;
+  readonly faction: Faction;
+  readonly handlers: MatchHandlers;
 }
+
+const NO_COMMAND: MatchCommand = Object.freeze({ deploy: null, buyLogistics: false });
+/** Upper bound on catch-up steps so a stalled tab cannot lock the loop. */
+const MAX_STEPS = 5;
 
 export interface MatchSession {
-  readonly state: TugSimulation['state'];
-  readonly camera: Camera;
-  readonly layout: HudLayout;
-  readonly fps: number;
-  readonly paused: boolean;
-  setPaused(paused: boolean): void;
-  dispose(): void;
+  readonly dispose: () => void;
+  readonly outcome: () => BattleOutcome | null;
+  readonly togglePause: () => void;
+  readonly isPaused: () => boolean;
+  /** Re-measure the canvas + HUD after a viewport change. */
+  readonly handleResize: () => void;
 }
 
-export function createMatchSession(options: MatchSessionOptions): MatchSession {
-  const { surface, storage, sound, faction, stage } = options;
+export function createMatchSession(options: MatchOptions): MatchSession {
+  const { container, storage, sound, stage, faction, handlers } = options;
   const config = createMatchConfig(stage, storage.snapshot());
   const simulation = new TugSimulation(config);
+
+  const surface: CanvasSurface = createCanvasSurface(container);
   const renderer = new BattleRenderer();
 
   const touch = prefersTouch();
-  let layout = computeHudLayout(surface.width, surface.height, touch);
-  // Fit the whole battlefield to the viewport and anchor the ground line; no
-  // fixed sub-rectangle, no letterbox bars.
-  let camera = createCamera(surface.width, surface.height);
+  const hudInfo: BattleHudInfo = {
+    nodeName: config.nodeName,
+    year: config.year,
+    strongpoint: config.strongpoint,
+    faction,
+    enemyFaction: faction === 'allied' ? 'axis' : 'allied',
+    tier: config.tier,
+    touch,
+  };
+
+  let disposed = false;
+  let paused = false;
   let zoomFactor = DEFAULT_ZOOM_FACTOR;
-  let followX = simulation.state.focusX;
   let panX = 0;
   let panHold = 0;
-  let paused = false;
-  let disposed = false;
-  let awarded = false;
-  let frame = 0;
-  let last = performance.now();
-  let accumulator = 0;
-  let fpsValue = 60;
-  const lastPlayed = new Map<SoundName, number>();
+  let dragging = false;
+  let followX = VIEW_WIDTH / 2;
+  let camera: Camera = createCamera(surface.width, surface.height);
+  let finished = false;
+  let outcome: BattleOutcome | null = null;
 
-  const input: BattleInput = createBattleInput({
-    element: surface.canvas,
-    onFirstGesture: () => {
-      void unlockAudio();
+  // --- HUD ------------------------------------------------------------------
+  const hud: BattleHud = createBattleHud(container, hudInfo, {
+    onDeploy: (kind) => issue({ deploy: kind, buyLogistics: false }),
+    onLogistics: () => issue({ deploy: null, buyLogistics: true }),
+    onAbort: () => handlers.onExit(),
+    onPause: () => {
+      paused = !paused;
+      hud.setPaused(paused);
+      play('uiClick');
+    },
+    onZoom: () => {
+      zoomFactor = zoomFactor > DEFAULT_ZOOM_FACTOR ? DEFAULT_ZOOM_FACTOR : clampZoomFactor(ZOOM_IN_FACTOR);
+      hud.setZoomed(zoomFactor > DEFAULT_ZOOM_FACTOR);
+      play('uiClick');
+    },
+    onRecenter: () => {
+      panX = 0;
+      panHold = 0;
+      play('uiClick');
     },
   });
 
-  async function unlockAudio(): Promise<void> {
-    if (sound.state === 'running') return;
-    try {
-      await sound.unlock();
-    } catch {
-      /* audio is optional; the game never blocks on it */
-    }
+  function issue(command: MatchCommand): void {
+    if (disposed || paused) return;
+    simulation.update(0, command);
   }
 
-  function play(name: SoundName, minGapMs: number, volume: number): void {
+  // --- audio ----------------------------------------------------------------
+  let audioBlocked = false;
+  const lastPlayed = new Map<SoundName, number>();
+
+  function play(name: SoundName, minGapMs = 0, volume = 1): void {
+    if (audioBlocked) return;
     const now = performance.now();
-    const previous = lastPlayed.get(name) ?? -Infinity;
-    if (now - previous < minGapMs) return;
+    const last = lastPlayed.get(name) ?? -Infinity;
+    if (now - last < minGapMs) return;
     lastPlayed.set(name, now);
-    sound.play(name, { volume });
-  }
-
-  function shotSoundFor(kind: SimEvent['kind']): SoundName {
-    switch (kind) {
-      case 'rifleman':
-        return 'rifleShot';
-      case 'smg':
-        return 'smgShot';
-      case 'tank':
-        return 'shellFire';
-      default:
-        return 'mgShot';
+    try {
+      sound.play(name, { volume });
+    } catch {
+      audioBlocked = true;
     }
   }
 
-  /** Sim events → soundboard. Each weapon keeps its own signature. */
+  function shotSound(kind: UnitKind): SoundName {
+    if (kind === 'rifleman') return 'rifleShot';
+    if (kind === 'smg') return 'smgShot';
+    return 'mgShot';
+  }
+
   function handleEvents(events: readonly SimEvent[]): void {
     for (const event of events) {
       switch (event.type) {
         case 'deploy':
-          play('deploy', 0, 0.5);
-          break;
-        case 'enemyDeploy':
-          play('uiBack', 400, 0.16);
+          play('deploy');
           break;
         case 'shot':
-          play(shotSoundFor(event.kind), 0, 0.3);
+          play(shotSound((event.kind ?? 'rifleman') as UnitKind), 0, 0.5);
           break;
         case 'shell':
-          play('shellFire', 0, 0.55);
+          play('shellFire', 0, 0.8);
           break;
         case 'impact':
-          play(event.metal ? 'ricochet' : 'impact', 0, event.metal ? 0.3 : 0.2);
+          play(event.metal ? 'ricochet' : 'impact', 0, 0.5);
           break;
         case 'explosion':
-          play('explosion', 0, 0.6);
+          play('explosion', 0, 0.7);
           break;
         case 'mineBlast':
-          play('mineBlast', 0, 0.7);
-          break;
-        case 'unitDown':
-          play('impact', 60, 0.4);
-          break;
-        case 'playerUnitDown':
-          play('uiBack', 320, 0.26);
-          break;
-        case 'trenchOverrun':
-          play('uiBack', 200, 0.3);
+          play('mineBlast', 0, 0.8);
           break;
         case 'baseHit':
-          play('impact', 120, 0.36);
+          play('impact', 0, 0.6);
           break;
         case 'baseDestroyed':
-          play('explosion', 0, 0.85);
+          play('explosion', 0, 1);
           break;
         case 'logisticsUpgrade':
-          play('upgrade', 0, 0.6);
+          play('upgrade');
           break;
-        case 'victory':
-          play('explosion', 0, 0.75);
-          break;
-        case 'defeat':
+        case 'trenchOverrun':
           play('uiBack', 0, 0.5);
           break;
+        default:
+          break;
       }
     }
   }
 
-  /** Taps are HUD presses; the canvas is the only surface, so all of it lands. */
-  function handleTap(x: number, y: number): void {
-    const control = hitControl(layout, x, y);
-    if (control === 'pause') {
-      setPaused(!paused);
-      return;
-    }
-    if (control === 'exit') {
-      play('uiBack', 0, 0.4);
-      options.onExit();
-      return;
-    }
-    if (control === 'recenter') {
-      panX = 0;
-      panHold = 0;
-      play('uiClick', 0, 0.4);
-      return;
-    }
-    if (control === 'zoom') {
-      // Fit is the default (whole battlefield, HQ left, strongpoint right);
-      // zooming in is opt-in and is the only time panning means anything.
-      zoomFactor =
-        zoomFactor > DEFAULT_ZOOM_FACTOR
-          ? DEFAULT_ZOOM_FACTOR
-          : clampZoomFactor(ZOOM_IN_FACTOR);
-      play('uiClick', 0, 0.4);
-      return;
-    }
-    const kind = hitDeploy(layout, x, y);
-    if (kind) {
-      queuedDeploy = kind;
-      return;
-    }
-    if (hitLogistics(layout, x, y)) {
-      if (simulation.state.bonds >= simulation.state.logisticsCost) {
-        buyLogistics = true;
-      } else {
-        play('uiBack', 0, 0.3);
-      }
-    }
-  }
-
-  function setPaused(next: boolean): void {
-    if (next === paused) return;
-    paused = next;
-    options.onPauseChange?.(paused);
-  }
-
-  // Player intent for the next simulation step.
-  let queuedDeploy: UnitKind | null = null;
-  let buyLogistics = false;
+  // --- input ----------------------------------------------------------------
+  const input: BattleInput = createBattleInput({
+    element: surface.canvas,
+    onFirstGesture: () => {
+      void sound.unlock();
+    },
+  });
 
   function handleKeys(): void {
     for (const key of input.takeKeys()) {
-      const lower = key.toLowerCase();
-      if (lower === 'escape') {
-        options.onExit();
-        return;
-      }
-      if (lower === 'p') {
-        setPaused(!paused);
+      if (key === 'p') {
+        paused = !paused;
+        hud.setPaused(paused);
+        play('uiClick');
         continue;
       }
-      if (lower === 'u') {
-        if (simulation.state.bonds >= simulation.state.logisticsCost) {
-          buyLogistics = true;
-        }
+      if (key === 'escape') {
+        handlers.onExit();
         continue;
       }
-      if (lower === 'c') {
-        panX = 0;
-        panHold = 0;
+      if (key === 'u') {
+        issue({ deploy: null, buyLogistics: true });
         continue;
       }
-      const kind = kindForHotkey(lower);
-      if (kind) queuedDeploy = kind;
+      if (key === 'z') {
+        zoomFactor = zoomFactor > DEFAULT_ZOOM_FACTOR ? DEFAULT_ZOOM_FACTOR : clampZoomFactor(ZOOM_IN_FACTOR);
+        hud.setZoomed(zoomFactor > DEFAULT_ZOOM_FACTOR);
+        continue;
+      }
+      const kind = kindForHotkey(key);
+      if (kind) issue({ deploy: kind, buyLogistics: false });
     }
   }
 
   function handleDrag(): void {
     const drag = input.takeDrag();
-    if (!drag) return;
-    if (Math.abs(drag.dx) < 0.5 && Math.abs(drag.dy) < 0.5) return;
-    // A drag that happens over the dock is a deploy attempt, not a pan.
     const pointer = input.pointer;
-    if (pointer === null) return;
-    if (pointer.y > layout.cssHeight - layout.dockHeight) return;
+    dragging = input.pressing;
+    if (!drag || !pointer) return;
+    // Never pan from a touch that started on the deployment cards.
+    if (pointer.y > surface.height - 130) return;
     panX -= drag.dx / camera.zoom;
-    panHold = PAN_HOLD_SECONDS;
+    panHold = 4;
   }
 
-  function step(dt: number): void {
+  // --- loop -----------------------------------------------------------------
+  let raf = 0;
+  let accumulator = 0;
+  let lastFrame = 0;
+  let fps = 60;
+
+  function updateCamera(dt: number): void {
+    const state = simulation.state;
+    const target = state.focusX;
+    followX += (target - followX) * Math.min(1, dt * 1.6);
+
+    if (panHold > 0) panHold = Math.max(0, panHold - dt);
+    else if (!dragging) panX += (0 - panX) * Math.min(1, dt * 0.5);
+
+    camera = cameraAt(surface.width, surface.height, followX + panX, zoomFactor);
+  }
+
+  function frame(now: number): void {
+    if (disposed) return;
+    raf = requestAnimationFrame(frame);
+    if (lastFrame === 0) lastFrame = now;
+    const elapsed = Math.min(0.25, (now - lastFrame) / 1000);
+    lastFrame = now;
+    fps = fps * 0.9 + (1 / Math.max(elapsed, 1 / 240)) * 0.1;
+
     handleKeys();
-    for (let tap = input.takeTap(); tap; tap = input.takeTap()) handleTap(tap.x, tap.y);
     handleDrag();
 
-    if (paused) {
-      // Particles and shake still settle, but the war stops.
-      simulation.update(0, { deploy: null, buyLogistics: false });
-      queuedDeploy = null;
-      buyLogistics = false;
-      return;
+    // The simulation runs on its own fixed step; the DOM HUD is refreshed once
+    // per frame from the resulting state.
+    if (!paused && simulation.state.status === 'running') {
+      accumulator += elapsed;
+      let steps = 0;
+      while (accumulator >= FIXED_DT && steps < MAX_STEPS) {
+        simulation.update(FIXED_DT, NO_COMMAND);
+        accumulator -= FIXED_DT;
+        steps += 1;
+      }
+      if (steps >= MAX_STEPS) accumulator = 0;
     }
 
-    const command: MatchCommand = { deploy: queuedDeploy, buyLogistics };
-    queuedDeploy = null;
-    buyLogistics = false;
-    simulation.update(dt, command);
+    const state = simulation.state;
     handleEvents(simulation.takeEvents());
-    settle();
+
+    updateCamera(elapsed);
+    renderer.draw(surface.ctx, state, camera, surface.pixelRatio, {
+      strongpoint: config.strongpoint,
+      paused,
+    });
+    hud.update(state, Math.round(fps));
+
+    if (!finished && state.status !== 'running') {
+      finished = true;
+      outcome = settle(state.status === 'victory' ? 'victory' : 'defeat', state.lossReason ?? 'time-expired');
+    }
   }
 
-  function settle(): void {
+  function settle(status: 'victory' | 'defeat', lossReason: string): BattleOutcome {
     const state = simulation.state;
-    if (state.status === 'running' || awarded) return;
-    awarded = true;
-    const bondsCollected = state.bonds;
-    if (bondsCollected > 0) storage.addWarBonds(bondsCollected);
-    const report = { casualties: state.stats.losses, kills: state.stats.kills };
-    if (state.status === 'victory') {
-      storage.completeStage(stage.id, stage.rewardBonds, report);
+    const stats = state.stats;
+    const bondsAwarded = status === 'victory' ? stage.rewardBonds : 0;
+
+    if (bondsAwarded > 0) {
+      storage.completeStage(stage.id, bondsAwarded, {
+        casualties: stats.losses,
+        kills: stats.kills,
+      });
     } else {
-      storage.recordLoss(stage.id, report);
+      storage.recordLoss(stage.id, { casualties: stats.losses, kills: stats.kills });
     }
-    options.onFinish({
+    if (stats.bondsCollected > 0) storage.addWarBonds(stats.bondsCollected);
+
+    play(status === 'victory' ? 'upgrade' : 'uiBack');
+
+    const unlocked = storage.snapshot();
+    const outcomeValue: BattleOutcome = {
       nodeId: stage.id,
       nodeName: stage.name,
       year: stage.year,
-      situation: options.situation,
-      status: state.status,
-      lossReason: state.lossReason ?? '',
-      bondsAwarded: state.status === 'victory' ? stage.rewardBonds : 0,
-      bondsCollected,
-      unitsDeployed: state.stats.deployed,
-      unitsLost: state.stats.losses,
-      enemyDestroyed: state.stats.kills,
-      minesHit: state.stats.minesHit,
-      enemyMinesHit: state.stats.enemyMinesHit,
-      logisticsBought: state.logisticsLevel,
+      situation: stageTagline(stage),
+      status,
+      lossReason,
+      bondsAwarded,
+      bondsCollected: stats.bondsCollected,
+      unitsDeployed: stats.deployed,
+      unitsLost: stats.losses,
+      enemyDestroyed: stats.kills,
+      minesHit: stats.minesHit,
+      enemyMinesHit: stats.enemyMinesHit,
+      logisticsBought: stats.logisticsBought,
       playerBaseRemaining: Math.max(0, Math.round(state.playerBase.hp)),
       playerBaseMax: state.playerBase.maxHp,
       enemyBaseRemaining: Math.max(0, Math.round(state.enemyBase.hp)),
       enemyBaseMax: state.enemyBase.maxHp,
       durationSeconds: state.time,
-      unlockedStage: state.status === 'victory' ? (nextStageId(stage.id) ?? null) : null,
-    });
-  }
-
-  /** Camera: follow the fighting, respect a manual pan, ease back after a beat. */
-  function updateCamera(dt: number): void {
-    const state = simulation.state;
-    const wanted = state.focusX;
-    followX += (wanted - followX) * Math.min(1, dt * FOLLOW_RATE);
-    if (!paused && panHold > 0) panHold = Math.max(0, panHold - dt);
-    if (panHold === 0 && panX !== 0) {
-      panX *= Math.max(0, 1 - dt * 1.4);
-      if (Math.abs(panX) < 0.5) panX = 0;
-    }
-    camera = cameraAt(surface.width, surface.height, followX + panX, zoomFactor);
-  }
-
-  function resize(): void {
-    layout = computeHudLayout(surface.width, surface.height, touch);
-    camera = cameraAt(surface.width, surface.height, followX + panX, zoomFactor);
-  }
-
-  function render(): void {
-    const state = simulation.state;
-    renderer.draw(surface.ctx, state, camera, layout, {
-      nodeName: stage.name,
-      year: stage.year,
-      strongpoint: state.enemyBase.side === 'enemy' ? stage.bossName : stage.bossName,
-      faction,
-      tier: stage.tier,
-      fps: fpsValue,
-      paused,
-      touch,
-      following: panX === 0,
-      zoomedIn: zoomFactor > DEFAULT_ZOOM_FACTOR,
-        }, surface.pixelRatio);
-  }
-
-  function loop(now: number): void {
-    if (disposed) return;
-    const elapsed = Math.min(0.25, Math.max(0, (now - last) / 1000));
-    last = now;
-    fpsValue = fpsValue * 0.9 + (elapsed > 0 ? 1 / elapsed : 60) * 0.1;
-
-    accumulator += elapsed;
-    const stepSeconds = 1 / 60;
-    let steps = 0;
-    while (accumulator >= stepSeconds && steps < 5) {
-      step(stepSeconds);
-      accumulator -= stepSeconds;
-      steps += 1;
-    }
-    updateCamera(elapsed);
-    render();
-    frame = requestAnimationFrame(loop);
+      unlockedStage: unlocked.unlockedStages[unlocked.unlockedStages.length - 1] ?? null,
+    };
+    return outcomeValue;
   }
 
   surface.onDraw = () => {
-    resize();
-    render();
+    if (disposed) return;
+    camera = cameraAt(surface.width, surface.height, followX + panX, zoomFactor);
+    renderer.draw(surface.ctx, simulation.state, camera, surface.pixelRatio, {
+      strongpoint: config.strongpoint,
+      paused,
+    });
   };
-  frame = requestAnimationFrame((now) => {
-    last = now;
-    loop(now);
-  });
+
+  // Fullscreen is best requested from a real gesture (the Deploy tap), but if
+  // the battle is entered another way this is the next best moment.
+  void enterFullscreen();
+  void tryLockLandscape();
+
+  raf = requestAnimationFrame(frame);
 
   return {
-    get state() {
-      return simulation.state;
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      cancelAnimationFrame(raf);
+      surface.onDraw = null;
+      input.dispose();
+      hud.dispose();
+      surface.dispose();
+      container.innerHTML = '';
     },
-    get camera() {
-      return camera;
+    outcome(): BattleOutcome | null {
+      return outcome;
     },
-    get layout() {
-      return layout;
+    togglePause(): void {
+      paused = !paused;
+      hud.setPaused(paused);
     },
-    get fps() {
-      return fpsValue;
-    },
-    get paused() {
+    isPaused(): boolean {
       return paused;
     },
-    setPaused,
-    dispose() {
-      disposed = true;
-      cancelAnimationFrame(frame);
-      input.dispose();
-      surface.onDraw = null;
+    handleResize(): void {
+      // The surface re-measures itself on resize; all we own is the camera.
+      camera = cameraAt(surface.width, surface.height, followX + panX, zoomFactor);
+      surface.onDraw?.(surface);
     },
   };
 }
 
-/** Touch-first device? Keyboard hints are pointless there. */
-export function prefersTouch(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
-  const coarse = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-  const noHover = window.matchMedia('(hover: none)').matches;
-  const touchPoints = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
-  return coarse || noHover || touchPoints;
-}
-
-export type { Camera, HudLayout };

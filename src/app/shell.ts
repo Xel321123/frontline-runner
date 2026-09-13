@@ -20,15 +20,15 @@ import { createGameStorage, SoundManager } from '../engine';
 import { createMatchConfig, effectiveSupplyRate } from '../game/match';
 import { stageTagline } from '../game/stageInfo';
 import { UNIT_ORDER } from '../game/units';
-import type { CanvasSurface, OrientationLockResult } from '../platform/Display';
+import type { OrientationLockResult } from '../platform/Display';
 import {
-  createCanvasSurface,
   enterFullscreen,
   exitFullscreen,
   isLandscape,
   tryLockLandscape,
 } from '../platform/Display';
-import { createMatchSession, prefersTouch, type BattleOutcome, type MatchSession } from './Match';
+import { createMatchSession, type BattleOutcome, type MatchSession } from './Match';
+import { prefersTouch } from '../platform/Display';
 import { mustFind, setHtml, show } from './dom';
 import {
   briefingHtml,
@@ -68,12 +68,7 @@ const SHELL_HTML = `
   <main>
     <div id="screen"></div>
     <div id="diagnostics" hidden></div>
-    <div id="play" hidden>
-      <div class="stage-wrap" id="stage"></div>
-      <p class="play-hint"><span class="mono">1-4</span> deploy ·
-        <span class="mono">U</span> boost logistics · <span class="mono">P</span> pause ·
-        <span class="mono">ESC</span> back to base — or click the deployment bar</p>
-    </div>
+    <div id="play" hidden></div>
     <div id="modal-layer" hidden><div class="modal" id="modal"></div></div>
   </main>
   <footer class="hint" id="hint"></footer>
@@ -91,7 +86,7 @@ export async function startShell(root: HTMLElement): Promise<void> {
   const screenEl = mustFind<HTMLElement>(root, '#screen');
   const diagnosticsEl = mustFind<HTMLElement>(root, '#diagnostics');
   const playEl = mustFind<HTMLElement>(root, '#play');
-  const stageEl = mustFind<HTMLElement>(root, '#stage');
+  const stageEl = mustFind<HTMLElement>(root, '#play');
   const modalLayerEl = mustFind<HTMLElement>(root, '#modal-layer');
   const modalEl = mustFind<HTMLElement>(root, '#modal');
   const hintEl = mustFind<HTMLElement>(root, '#hint');
@@ -102,7 +97,6 @@ export async function startShell(root: HTMLElement): Promise<void> {
 
   let modal: ModalState = { kind: null };
   let session: MatchSession | null = null;
-  let surface: CanvasSurface | null = null;
   let lastOutcome: BattleOutcome | null = null;
   let showingTitle = false;
   let diagnosticsOpen = false;
@@ -245,25 +239,27 @@ export async function startShell(root: HTMLElement): Promise<void> {
 
     // Fullscreen has to be requested from inside the tap that started this, so
     // it happens here rather than after the canvas is built.
+    // Inside the tap that starts the battle, which is the only place a browser
+    // will honour a fullscreen request.
     void enterFullscreen();
     void unlockAudio();
     setBattleChrome(true);
     modal = { kind: null };
     lastOutcome = null;
-    surface = createCanvasSurface(stageEl);
     session = createMatchSession({
-      surface,
+      container: stageEl,
       storage,
       sound,
       faction: save.faction,
       stage,
-      situation: stageTagline(stage),
-      onExit: () => exitBattle(),
-      onFinish: (outcome: BattleOutcome) => {
-        lastOutcome = outcome;
-        modal = { kind: 'result' };
-        saveNote = `last battle: ${outcome.status} at ${outcome.nodeName}`;
-        render();
+      handlers: {
+        onExit: () => exitBattle(),
+        onFinish: (outcome: BattleOutcome) => {
+          lastOutcome = outcome;
+          modal = { kind: 'result' };
+          saveNote = `last battle: ${outcome.status} at ${outcome.nodeName}`;
+          render();
+        },
       },
     });
     debugApi.session = session;
@@ -282,8 +278,6 @@ export async function startShell(root: HTMLElement): Promise<void> {
     session?.dispose();
     session = null;
     debugApi.session = null;
-    surface?.dispose();
-    surface = null;
   }
 
   function exitBattle(): void {

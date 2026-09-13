@@ -923,143 +923,356 @@ main {
   text-align: center;
 }
 
-/* ---- battle: the canvas is the screen ------------------------------------
-   While a battle runs there is no chrome at all: the canvas fills the viewport
-   edge to edge and every HUD element is drawn onto it, translucent, so nothing
-   steals vertical space from the battlefield. */
+/* ---- battle: 100% borderless, edge-to-edge -------------------------------
+   While a battle runs there is no app frame at all: no header, no footer, no
+   hints, no margins. The container and canvas are pinned to the viewport and
+   every HUD element is a DOM overlay floating on top of the canvas. */
 
 #app.battle-active {
-  padding: 0;
-  height: 100%;
+  padding: 0 !important;
+  margin: 0 !important;
+  overflow: hidden;
 }
 
-#app.battle-active .app {
-  height: 100%;
-  max-height: 100%;
-  padding: 0;
-  gap: 0;
+#app.battle-active .app,
+#app.battle-active main {
+  padding: 0 !important;
+  margin: 0 !important;
+  gap: 0 !important;
+  display: block !important;
+  max-width: none !important;
+  height: 100% !important;
 }
 
 #app.battle-active .bar,
+#app.battle-active header,
+#app.battle-active footer,
 #app.battle-active .hint,
-#app.battle-active .play-hint,
 #app.battle-active #screen,
-#app.battle-active #diagnostics {
-  display: none;
-}
-
-#app.battle-active main {
-  display: block;
-  height: 100%;
-  min-height: 0;
-  padding: 0;
-  margin: 0;
-  gap: 0;
+#app.battle-active #diagnostics,
+#app.battle-active .play-hint {
+  display: none !important;
 }
 
 #app.battle-active #play {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
   width: 100vw;
   height: 100vh;
-  /* dvh covers the mobile URL-bar shuffle where it is supported. */
-  height: 100dvh;
-  display: block;
-  padding: 0;
-  margin: 0;
-}
-
-#app.battle-active #play[hidden] {
-  display: none;
-}
-
-#app.battle-active .stage-wrap {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: #050706;
-}
-
-#app.battle-active .stage {
-  width: 100%;
-  height: 100%;
-}
-
-/* Touch devices get no keyboard hints: there is no keyboard. */
-@media (hover: none), (pointer: coarse) {
-  .play-hint,
-  .hint kbd,
-  .hint .kbd {
-    display: none;
-  }
-}
-
-/* While the player is dragging the battlefield, the page must not scroll,
-   rubber-band or double-tap-zoom underneath. */
-html,
-body {
-  overscroll-behavior: none;
-  -webkit-tap-highlight-color: transparent;
-}
-
-#app.battle-active,
-#app.battle-active .stage {
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  z-index: 9999;
+  background: #000;
+  overflow: hidden;
   overscroll-behavior: none;
   touch-action: none;
 }
 
-/* while a run is live, the menus step aside */
-
-body.playing .chip#btn-camp {
-  display: none;
+#app.battle-active #play[hidden] {
+  display: none !important;
 }
 
-/* portrait nudge */
+/* The canvas fills the fixed container: its CSS box is the viewport and its
+   backing store is that box times the device pixel ratio. */
+#app.battle-active #play .stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: #000;
+  touch-action: none;
+}
 
-body.portrait .stage-wrap::after {
-  content: "↻ rotate to landscape";
+/* ---- HUD, floated on top of the canvas ---------------------------------- */
+
+#hud-top {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  right: 16px;
+  pointer-events: none;
+  z-index: 10000;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: #eef3ea;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+#hud-top .hud-side {
+  flex: 0 0 auto;
+  min-width: 120px;
+  max-width: 26vw;
+}
+
+#hud-top .hud-side--enemy {
+  text-align: right;
+}
+
+#hud-top .hud-label {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 10px;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#hud-top .hud-bar {
+  height: 9px;
+  margin-top: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  background: rgba(8, 12, 9, 0.6);
+  overflow: hidden;
+}
+
+#hud-top .hud-side--enemy .hud-bar {
+  direction: rtl;
+}
+
+#hud-top .hud-bar span {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(#8fbf62, #5d8f3a);
+  transition: width 120ms linear;
+}
+
+#hud-top .hud-side--enemy .hud-bar span {
+  background: linear-gradient(#d07157, #a0432c);
+}
+
+#hud-top .hud-hp {
+  font-weight: 700;
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+#hud-top .hud-mid {
+  flex: 1 1 auto;
+  text-align: center;
+  min-width: 0;
+}
+
+#hud-top .hud-clock {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+#hud-top .hud-objective {
+  font-size: 10px;
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#hud-top .hud-stats {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+#hud-top .hud-stat b {
+  font-size: 14px;
+}
+
+#hud-top .hud-stat i {
+  font-style: normal;
+  opacity: 0.75;
+  margin-left: 2px;
+}
+
+#hud-top .hud-stat--bond {
+  color: #f0d38a;
+}
+
+#hud-top .hud-stat--dim {
+  opacity: 0.6;
+  font-size: 10px;
+}
+
+#hud-top .hud-buttons {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+#hud-top .hud-btn {
+  pointer-events: auto;
+  min-width: 38px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(10, 14, 11, 0.55);
+  color: #eef3ea;
+  font: 700 13px var(--mono);
+  backdrop-filter: blur(2px);
+  cursor: pointer;
+}
+
+#hud-top .hud-btn.is-on {
+  background: rgba(240, 211, 138, 0.28);
+  border-color: rgba(240, 211, 138, 0.7);
+}
+
+#hud-top .hud-btn--abort {
+  color: #ffd9d2;
+  border-color: rgba(224, 122, 104, 0.6);
+}
+
+#hud-bottom {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: auto;
+  max-width: 95vw;
+  display: flex;
+  gap: 8px;
+  z-index: 10000;
+  font-family: var(--mono);
+}
+
+.card {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 1px;
+  min-width: 86px;
+  padding: 6px 8px 7px;
+  border: 2px solid rgba(255, 255, 255, 0.24);
+  border-radius: 12px;
+  background: rgba(10, 14, 11, 0.72);
+  color: #eef3ea;
+  font: 700 11px var(--mono);
+  cursor: pointer;
+  backdrop-filter: blur(3px);
+  transition: transform 80ms ease, border-color 120ms ease;
+}
+
+.card:active {
+  transform: scale(0.96);
+}
+
+.card.is-affordable {
+  border-color: rgba(143, 191, 98, 0.85);
+}
+
+.card.is-ready {
+  box-shadow: 0 0 0 2px rgba(143, 191, 98, 0.35) inset;
+}
+
+.card.is-blocked {
+  opacity: 0.55;
+}
+
+.card-icon {
+  width: 54px;
+  height: 40px;
+  display: block;
+}
+
+.card-name {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+.card-cost-wrap {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(240, 211, 138, 0.18);
+  color: #f0d38a;
+  font-size: 13px;
+}
+
+.card-supplies,
+.card-supplies-note {
+  font-size: 9px;
+  opacity: 0.8;
+  color: #eef3ea;
+}
+
+.card-hotkey {
+  position: absolute;
+  top: 4px;
+  left: 5px;
+  font-size: 9px;
+  opacity: 0.5;
+}
+
+/* Circular cooldown sweep: a conic gradient measured from 12 o'clock. */
+.card-sweep {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
-  font-size: 14px;
+  border-radius: inherit;
+  background: conic-gradient(rgba(6, 9, 7, 0.78) var(--sweep, 0deg), rgba(6, 9, 7, 0) 0);
+  opacity: 0;
+  transition: opacity 120ms ease;
+  pointer-events: none;
+}
+
+.card-sweep.is-active {
+  opacity: 1;
+}
+
+.card-wait {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 3px #000;
+  pointer-events: none;
+}
+
+.card--logistics {
+  min-width: 96px;
+  background: rgba(30, 22, 8, 0.76);
+  border-color: rgba(240, 211, 138, 0.5);
+}
+
+.card-boost {
+  font-size: 10px;
   letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--muted);
-  background: rgba(5, 7, 6, 0.9);
+  color: #f0d38a;
 }
 
-.fatal {
-  padding: 28px;
-  color: var(--red);
-}
-
-.fatal pre {
-  white-space: pre-wrap;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-@media (max-width: 640px) {
-  .bar {
-    padding: 8px 12px;
-  }
-
-  .brand h1 {
-    font-size: 15px;
-  }
-
-  .node-label {
-    display: none;
-  }
-
-  .node--current .node-label,
-  .node.is-deployable .node-label {
-    display: inline;
+/* Touch devices never see keyboard hints. */
+@media (hover: none), (pointer: coarse) {
+  .play-hint,
+  .hint {
+    display: none !important;
   }
 }

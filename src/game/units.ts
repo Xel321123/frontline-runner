@@ -134,3 +134,18 @@ export const UNIT_ORDER: readonly UnitKind[] = ['rifleman', 'smg', 'mg', 'tank']
 export function unitStats(kind: UnitKind): UnitStats {
   return UNIT_STATS[kind];
 }
+
+/** Bar order for the deployment cards. */
+export const DEPLOY_ORDER: readonly UnitKind[] = ['rifleman', 'smg', 'mg', 'tank'];
+
+/** Keyboard shortcut label for a unit: its position in the bar. */
+export function hotkeyFor(kind: UnitKind): string {
+  return String(DEPLOY_ORDER.indexOf(kind) + 1);
+}
+
+/** Reverse of `hotkeyFor`, for the '1'..'4' keys. */
+export function kindForHotkey(key: string): UnitKind | null {
+  const index = Number(key);
+  if (!Number.isInteger(index) || index < 1 || index > DEPLOY_ORDER.length) return null;
+  return DEPLOY_ORDER[index - 1] ?? null;
+}
