@@ -49,7 +49,12 @@ jobs:
           test -f dist/manifest.webmanifest
           test -f dist/sw.js
           test -f dist/404.html
-          test -d dist/assets/characters
+          # The campaign map is the only image the app ships...
+          test -f dist/assets/maps/europe_blank_laea.svg
+          # ...and the battlefield must never ship a sprite pack again: every
+          # unit and terrain layer is drawn from Canvas 2D paths at runtime.
+          test ! -d dist/assets/characters
+          test ! -d dist/assets/weapons
           echo "dist size: $(du -sh dist | cut -f1)"
 
       - name: Upload Pages artifact
