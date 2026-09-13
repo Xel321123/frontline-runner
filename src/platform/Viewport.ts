@@ -1,93 +1,66 @@
 /**
- * Camera — world → screen mapping for a full-bleed mobile viewport.
+ * Camera — world → screen mapping for a full-bleed viewport.
  *
- * There is no letterboxing any more. The canvas always fills the whole window
- * (100vw x 100vh) and the camera *crops* instead of barring: it renders a
- * window of the 1280x720 world, zoomed in so units fill the screen, and pans
- * horizontally to follow the fighting.
+ * Two rules define the whole model:
  *
- * The zoom is derived, not fixed. A zoom is chosen so the visible world never
- * exceeds the world itself in either axis — on a very wide or very tall screen
- * that means zooming in further rather than showing empty space beyond the
- * battlefield. `MIN_ZOOM`/`MAX_ZOOM` bracket the result.
+ *  1. NO LETTERBOXING. The camera never draws into a fixed sub-rectangle; it
+ *     spans 100% of the viewport at every aspect ratio, cropping rather than
+ *     barring.
+ *  2. The ground line is anchored `GROUND_MARGIN` px above the bottom edge, so
+ *     the deployment bar sits on real ground and the sky does not dominate.
  *
- * Canvas CSS pixels are the unit of everything the player touches, so HUD
- * hit-testing happens in the same space the HUD is drawn in (see `game/hud.ts`).
+ * `zoom` is a plain multiplier on the fit scale (CSS px per world px), so
+ * zoom = 1 shows the whole battlefield — HQ near the left edge, strongpoint
+ * near the right — and larger values push in for close action.
  */
+
+import { GROUND_Y, VIEW_HEIGHT, VIEW_WIDTH } from '../game/constants';
+
+/** Distance from the ground line to the bottom of the viewport, in CSS px. */
+export const GROUND_MARGIN = 120;
+export const MIN_ZOOM_FACTOR = 1;
+export const MAX_ZOOM_FACTOR = 2.2;
+export const DEFAULT_ZOOM_FACTOR = 1;
+/** Opt-in close-action zoom (the HUD button toggles between the two). */
+export const ZOOM_IN_FACTOR = 1.7;
 
 export interface Camera {
-  /** World units per CSS pixel. 1.8 means "1.8x closer than no zoom". */
-  readonly zoom: number;
-  /** World coordinates at the centre of the viewport. */
-  readonly focusX: number;
-  readonly focusY: number;
-  /** Canvas size in CSS pixels. */
+  /** Viewport size in CSS pixels. */
   readonly cssWidth: number;
   readonly cssHeight: number;
+  /** CSS pixels per world unit. */
+  readonly zoom: number;
+  /** World point at the centre of the viewport. */
+  readonly focusX: number;
+  readonly focusY: number;
 }
 
-export interface CameraBounds {
-  readonly minFocusX: number;
-  readonly maxFocusX: number;
-  readonly minFocusY: number;
-  readonly maxFocusY: number;
+/** Whole battlefield visible: the scale that fits the world width exactly. */
+export function fitScale(cssWidth: number): number {
+  return Math.max(0.05, cssWidth / VIEW_WIDTH);
 }
 
-/** Never zoom out so far that the world runs out; never zoom in absurdly. */
-export const MIN_ZOOM = 1.5;
-export const MAX_ZOOM = 2.6;
-/** Where the ground line sits vertically, as a fraction of screen height. */
-export const GROUND_SCREEN_FRACTION = 0.66;
-
-export function clamp(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, value));
+/** World point that sits at the viewport centre when the ground is anchored. */
+function focusYFor(cssHeight: number, zoom: number): number {
+  return GROUND_Y - (cssHeight / 2 - GROUND_MARGIN) / zoom;
 }
 
-/**
- * Pick the zoom for a viewport: the requested zoom, raised if necessary so the
- * visible world fits inside the world in both axes. This is what guarantees
- * "no bars, no gaps" at any aspect ratio.
- */
-export function resolveZoom(
-  cssWidth: number,
-  cssHeight: number,
-  worldWidth: number,
-  worldHeight: number,
-  desired: number,
-): number {
-  const widthFloor = cssWidth / worldWidth;
-  const heightFloor = cssHeight / worldHeight;
-  return clamp(Math.max(desired, widthFloor, heightFloor), MIN_ZOOM, MAX_ZOOM);
+export function clampZoomFactor(factor: number): number {
+  return Math.min(MAX_ZOOM_FACTOR, Math.max(MIN_ZOOM_FACTOR, factor));
 }
 
-export function createCamera(
-  cssWidth: number,
-  cssHeight: number,
-  worldWidth: number,
-  worldHeight: number,
-  desiredZoom: number,
-  groundY: number,
-): Camera {
-  const zoom = resolveZoom(cssWidth, cssHeight, worldWidth, worldHeight, desiredZoom);
-  return clampCamera(
-    {
-      zoom,
-      focusX: worldWidth / 2,
-      focusY: groundFocusY(zoom, cssHeight, groundY),
-      cssWidth: Math.max(1, cssWidth),
-      cssHeight: Math.max(1, cssHeight),
-    },
-    worldWidth,
-    worldHeight,
-  );
+export function createCamera(cssWidth: number, cssHeight: number): Camera {
+  const zoom = fitScale(cssWidth);
+  return {
+    cssWidth: Math.max(1, cssWidth),
+    cssHeight: Math.max(1, cssHeight),
+    zoom,
+    focusX: VIEW_WIDTH / 2,
+    focusY: focusYFor(cssHeight, zoom),
+  };
 }
 
-/** Focus Y that lands the ground line where the art direction wants it. */
-export function groundFocusY(zoom: number, cssHeight: number, groundY: number): number {
-  return groundY - (GROUND_SCREEN_FRACTION - 0.5) * (cssHeight / zoom);
-}
-
+/** World half-width visible at a given zoom. */
 export function visibleWorldWidth(camera: Camera): number {
   return camera.cssWidth / camera.zoom;
 }
@@ -96,70 +69,51 @@ export function visibleWorldHeight(camera: Camera): number {
   return camera.cssHeight / camera.zoom;
 }
 
-/** Where the camera may look, keeping the view inside the world. */
-export function cameraBounds(
-  camera: Camera,
-  worldWidth: number,
-  worldHeight: number,
-): CameraBounds {
-  const halfW = visibleWorldWidth(camera) / 2;
-  const halfH = visibleWorldHeight(camera) / 2;
-  return {
-    minFocusX: halfW,
-    maxFocusX: Math.max(halfW, worldWidth - halfW),
-    minFocusY: halfH,
-    maxFocusY: Math.max(halfH, worldHeight - halfH),
-  };
-}
-
-/** Keep a camera inside the world and pinned to the ground line. */
-export function clampCamera(
-  camera: Camera,
-  worldWidth: number,
-  worldHeight: number,
-  groundY?: number,
-): Camera {
-  const bounds = cameraBounds(camera, worldWidth, worldHeight);
-  const focusY =
-    groundY === undefined
-      ? clamp(camera.focusY, bounds.minFocusY, bounds.maxFocusY)
-      : clamp(groundFocusY(camera.zoom, camera.cssHeight, groundY), bounds.minFocusY, bounds.maxFocusY);
-  return {
-    ...camera,
-    focusX: clamp(camera.focusX, bounds.minFocusX, bounds.maxFocusX),
-    focusY,
-  };
-}
-
-/** Re-centre on a new world point without changing zoom. */
+/**
+ * Re-derive a camera for a new viewport / focus / zoom. Focus is clamped so the
+ * view never leaves the battlefield horizontally, and the ground stays anchored.
+ */
 export function cameraAt(
-  camera: Camera,
-  worldWidth: number,
-  worldHeight: number,
-  focusX: number,
-  groundY: number,
+  cssWidth: number,
+  cssHeight: number,
+  desiredFocusX: number,
+  zoomFactor: number = DEFAULT_ZOOM_FACTOR,
 ): Camera {
-  return clampCamera({ ...camera, focusX }, worldWidth, worldHeight, groundY);
-}
-
-export function worldToScreen(
-  camera: Camera,
-  x: number,
-  y: number,
-): { readonly x: number; readonly y: number } {
+  const zoom = fitScale(cssWidth) * clampZoomFactor(zoomFactor);
+  const half = cssWidth / (2 * zoom);
+  const minFocus = Math.min(half, VIEW_WIDTH / 2);
+  const maxFocus = Math.max(VIEW_WIDTH - half, VIEW_WIDTH / 2);
+  const focusX = Math.min(maxFocus, Math.max(minFocus, desiredFocusX));
   return {
-    x: (x - camera.focusX) * camera.zoom + camera.cssWidth / 2,
-    y: (y - camera.focusY) * camera.zoom + camera.cssHeight / 2,
+    cssWidth: Math.max(1, cssWidth),
+    cssHeight: Math.max(1, cssHeight),
+    zoom,
+    focusX,
+    focusY: focusYFor(cssHeight, zoom),
   };
 }
 
-export function screenToWorld(
-  camera: Camera,
-  x: number,
-  y: number,
-): { readonly x: number; readonly y: number } {
+export function worldToScreen(camera: Camera, x: number, y: number): { x: number; y: number } {
   return {
-    x: (x - camera.cssWidth / 2) / camera.zoom + camera.focusX,
-    y: (y - camera.cssHeight / 2) / camera.zoom + camera.focusY,
+    x: camera.cssWidth / 2 + (x - camera.focusX) * camera.zoom,
+    y: camera.cssHeight / 2 + (y - camera.focusY) * camera.zoom,
   };
+}
+
+export function screenToWorld(camera: Camera, x: number, y: number): { x: number; y: number } {
+  return {
+    x: camera.focusX + (x - camera.cssWidth / 2) / camera.zoom,
+    y: camera.focusY + (y - camera.cssHeight / 2) / camera.zoom,
+  };
+}
+
+/** Vertical world bounds visible on screen, for the terrain painters. */
+export function visibleWorldRange(camera: Camera): { top: number; bottom: number } {
+  const half = visibleWorldHeight(camera) / 2;
+  return { top: camera.focusY - half, bottom: camera.focusY + half };
+}
+
+/** Sanity helper used by the tests: the world height at this zoom. */
+export function worldHeightOnScreen(camera: Camera): number {
+  return VIEW_HEIGHT * camera.zoom;
 }

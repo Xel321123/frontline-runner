@@ -1,7 +1,7 @@
 {
   "name": "frontline-runner",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "module",
   "description": "Frontline Runner — an offline-first landscape tug-of-war battlefield (Vite + TypeScript + Canvas 2D, 100% procedural graphics), portable to iOS/Android via Capacitor.",
   "engines": {
@@ -13,6 +13,7 @@
     "check:data": "node scripts/check-campaign-data.mjs",
     "check:sim": "node scripts/simulate-match.mjs",
     "check:save": "node scripts/check-progression.mjs",
+    "check:viewport": "node scripts/check-viewport.mjs",
     "build": "tsc && vite build && node scripts/copy-404.mjs",
     "build:native": "VITE_BASE=./ npm run build",
     "preview": "vite preview --port 4173",

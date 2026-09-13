@@ -156,4 +156,10 @@ export function drawAtmosphere(
   if (rules.sandstorm) drawSandstorm(ctx, time, VIEW_WIDTH, VIEW_HEIGHT);
   if (options.environment === 'mud') drawMist(ctx, time, VIEW_WIDTH);
   if (rules.searchlights) drawNight(ctx, searchlights, time, VIEW_WIDTH, VIEW_HEIGHT);
+
+  // The lighting layer paints large bright shapes (searchlight cones, lit
+  // ground pools). Leave the context exactly as it was found so an additive
+  // blend can never leak into the HUD or flood a later frame.
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
 }

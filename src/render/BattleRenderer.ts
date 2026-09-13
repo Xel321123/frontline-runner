@@ -63,6 +63,7 @@ export interface BattleHudInfo {
   readonly touch: boolean;
   /** Right-hand side of the pan control: is the camera following the fight? */
   readonly following: boolean;
+  readonly zoomedIn: boolean;
 }
 
 export class BattleRenderer {
@@ -74,12 +75,27 @@ export class BattleRenderer {
     camera: Camera,
     layout: HudLayout,
     hud: BattleHudInfo,
+    ratio: number,
   ): void {
     const { cssWidth, cssHeight } = camera;
 
-    // --- clear: no bars, so the whole canvas is game ------------------------
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // --- buffer -> CSS pixels ----------------------------------------------
+    // The backing store is devicePixelRatio times the viewport, so this must be
+    // re-applied EVERY frame. Resetting to identity here is precisely what made
+    // the game draw at 1/dpr scale in the top-left quadrant of the canvas on
+    // real phones (dpr 2-3) while looking correct at dpr 1.
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
     ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    // --- base fill: no uncovered bands at any aspect ratio ------------------
+    const look = SCENE_LOOKS[state.environment];
+    const groundY = worldToScreen(camera, 0, GROUND_Y).y;
+    ctx.fillStyle = look.skyTop;
+    ctx.fillRect(0, 0, cssWidth, Math.max(0, groundY));
+    ctx.fillStyle = look.groundNear;
+    ctx.fillRect(0, Math.max(0, groundY), cssWidth, Math.max(0, cssHeight - groundY));
 
     // --- world pass --------------------------------------------------------
     const shake = this.shakeOffset(state);
@@ -556,8 +572,10 @@ export class BattleRenderer {
       lr.y + lr.h - 10 * scale,
     );
 
-    // Recenter control sits above the logistics card.
+    // Recenter control sits above the logistics card, with the field-zoom
+    // toggle beside it (fit is the default, zoom is the opt-in close view).
     this.drawIconButton(ctx, layout.recenter, hud.following ? '◎' : '➤', layout);
+    this.drawIconButton(ctx, layout.zoom, hud.zoomedIn ? '⤡' : '⤢', layout);
     ctx.textAlign = 'left';
   }
 

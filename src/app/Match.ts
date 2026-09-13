@@ -17,7 +17,6 @@ import {
 } from '../engine/Input';
 import type { GameStorage, SoundManager, SoundName } from '../engine';
 import { nextStageId, type StageDefinition } from '../core/progression';
-import { CAMERA_ZOOM, GROUND_Y, VIEW_HEIGHT, VIEW_WIDTH } from '../game/constants';
 import {
   computeHudLayout,
   hitControl,
@@ -32,7 +31,10 @@ import type { MatchCommand, MatchStatus, SimEvent } from '../game/tugTypes';
 import type { UnitKind } from '../game/units';
 import type { CanvasSurface } from '../platform/Display';
 import {
+  DEFAULT_ZOOM_FACTOR,
+  ZOOM_IN_FACTOR,
   cameraAt,
+  clampZoomFactor,
   createCamera,
   type Camera,
 } from '../platform/Viewport';
@@ -102,14 +104,10 @@ export function createMatchSession(options: MatchSessionOptions): MatchSession {
 
   const touch = prefersTouch();
   let layout = computeHudLayout(surface.width, surface.height, touch);
-  let camera = createCamera(
-    surface.width,
-    surface.height,
-    VIEW_WIDTH,
-    VIEW_HEIGHT,
-    CAMERA_ZOOM,
-    GROUND_Y,
-  );
+  // Fit the whole battlefield to the viewport and anchor the ground line; no
+  // fixed sub-rectangle, no letterbox bars.
+  let camera = createCamera(surface.width, surface.height);
+  let zoomFactor = DEFAULT_ZOOM_FACTOR;
   let followX = simulation.state.focusX;
   let panX = 0;
   let panHold = 0;
@@ -227,6 +225,16 @@ export function createMatchSession(options: MatchSessionOptions): MatchSession {
     if (control === 'recenter') {
       panX = 0;
       panHold = 0;
+      play('uiClick', 0, 0.4);
+      return;
+    }
+    if (control === 'zoom') {
+      // Fit is the default (whole battlefield, HQ left, strongpoint right);
+      // zooming in is opt-in and is the only time panning means anything.
+      zoomFactor =
+        zoomFactor > DEFAULT_ZOOM_FACTOR
+          ? DEFAULT_ZOOM_FACTOR
+          : clampZoomFactor(ZOOM_IN_FACTOR);
       play('uiClick', 0, 0.4);
       return;
     }
@@ -360,20 +368,12 @@ export function createMatchSession(options: MatchSessionOptions): MatchSession {
       panX *= Math.max(0, 1 - dt * 1.4);
       if (Math.abs(panX) < 0.5) panX = 0;
     }
-    camera = cameraAt(camera, VIEW_WIDTH, VIEW_HEIGHT, followX + panX, GROUND_Y);
+    camera = cameraAt(surface.width, surface.height, followX + panX, zoomFactor);
   }
 
   function resize(): void {
     layout = computeHudLayout(surface.width, surface.height, touch);
-    camera = createCamera(
-      surface.width,
-      surface.height,
-      VIEW_WIDTH,
-      VIEW_HEIGHT,
-      CAMERA_ZOOM,
-      GROUND_Y,
-    );
-    camera = cameraAt(camera, VIEW_WIDTH, VIEW_HEIGHT, followX + panX, GROUND_Y);
+    camera = cameraAt(surface.width, surface.height, followX + panX, zoomFactor);
   }
 
   function render(): void {
@@ -388,7 +388,8 @@ export function createMatchSession(options: MatchSessionOptions): MatchSession {
       paused,
       touch,
       following: panX === 0,
-    });
+      zoomedIn: zoomFactor > DEFAULT_ZOOM_FACTOR,
+        }, surface.pixelRatio);
   }
 
   function loop(now: number): void {

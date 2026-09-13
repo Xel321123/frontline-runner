@@ -51,6 +51,7 @@ export interface HudLayout {
   readonly logistics: Rect;
   /** Recorder/recenter button, sitting above the logistics card. */
   readonly recenter: Rect;
+  readonly zoom: Rect;
   readonly pause: Rect;
   readonly exit: Rect;
   readonly playerBar: Rect;
@@ -140,6 +141,8 @@ export function computeHudLayout(cssWidth: number, cssHeight: number, touch: boo
     controlSize,
     controlSize,
   );
+  // Zoom sits to the left of recentre: field zoom is opt-in, fit is the default.
+  const zoom = rect(recenter.x - controlSize - Math.round(8 * scale), recenter.y, controlSize, controlSize);
 
   return {
     cssWidth: w,
@@ -152,6 +155,7 @@ export function computeHudLayout(cssWidth: number, cssHeight: number, touch: boo
     slots,
     logistics,
     recenter,
+    zoom,
     pause,
     exit,
     playerBar,
@@ -172,12 +176,13 @@ export function hitLogistics(layout: HudLayout, x: number, y: number): boolean {
   return rectContains(layout.logistics, x, y);
 }
 
-export type HudControl = 'pause' | 'exit' | 'recenter';
+export type HudControl = 'pause' | 'exit' | 'recenter' | 'zoom';
 
 export function hitControl(layout: HudLayout, x: number, y: number): HudControl | null {
   if (rectContains(layout.pause, x, y)) return 'pause';
   if (rectContains(layout.exit, x, y)) return 'exit';
   if (rectContains(layout.recenter, x, y)) return 'recenter';
+  if (rectContains(layout.zoom, x, y)) return 'zoom';
   return null;
 }
 

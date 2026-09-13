@@ -7,6 +7,7 @@
  * a `CanvasSurface` and draws into `surface.ctx`.
  */
 
+import { computeCanvasMetrics } from './canvasMetrics';
 import { createCanvas, get2dContext } from './images';
 
 export type OrientationLockResult = 'locked' | 'unsupported' | 'denied';
@@ -76,24 +77,38 @@ export function createCanvasSurface(
       frame = null;
       observer.disconnect();
       window.removeEventListener('orientationchange', onLayoutChange);
+      window.visualViewport?.removeEventListener('resize', onLayoutChange);
       canvas.remove();
     },
   };
 
+  /**
+   * Size the backing buffer and the display box together, from the *window*.
+   *
+   * Taking the size from `window.innerWidth/innerHeight` rather than the
+   * container's rect removes any dependence on layout timing (the container can
+   * still be mid-transition when a battle starts, which used to leave the buffer
+   * sized for the old, letterboxed box). `buffer = css * ratio` and
+   * `ctx.setTransform(ratio, ...)` are applied in the same place, so the two can
+   * never drift apart.
+   */
   function resize(): void {
-    const rect = container.getBoundingClientRect();
-    const cssWidth = Math.max(1, Math.floor(rect.width));
-    const cssHeight = Math.max(1, Math.floor(rect.height));
-    ratio = Math.min(maxPixelRatio, Math.max(1, window.devicePixelRatio || 1));
-    width = cssWidth;
-    height = cssHeight;
+    const metrics = computeCanvasMetrics(
+      window.innerWidth,
+      window.innerHeight,
+      window.devicePixelRatio,
+      maxPixelRatio,
+    );
+    width = metrics.cssWidth;
+    height = metrics.cssHeight;
+    ratio = metrics.ratio;
 
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
-    canvas.width = Math.floor(width * ratio);
-    canvas.height = Math.floor(height * ratio);
-    // Draw in CSS pixels; the transform handles the retina scaling.
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    canvas.style.width = `${metrics.cssWidth}px`;
+    canvas.style.height = `${metrics.cssHeight}px`;
+    if (canvas.width !== metrics.bufferWidth) canvas.width = metrics.bufferWidth;
+    if (canvas.height !== metrics.bufferHeight) canvas.height = metrics.bufferHeight;
+    // Draw in CSS pixels; this transform carries the retina scaling.
+    ctx.setTransform(metrics.ratio, 0, 0, metrics.ratio, 0, 0);
     surface.requestRedraw();
   }
 
@@ -104,6 +119,9 @@ export function createCanvasSurface(
   const observer = new ResizeObserver(onLayoutChange);
   observer.observe(container);
   window.addEventListener('orientationchange', onLayoutChange);
+  // iOS fires neither reliably when the URL bar collapses: the visual viewport
+  // does, and it is the box the player actually sees.
+  window.visualViewport?.addEventListener('resize', onLayoutChange);
 
   resize();
   return surface;
