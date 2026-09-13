@@ -18,11 +18,20 @@ import {
   READOUT_RECT,
   TOP_BAR_HEIGHT,
 } from '../game/hud';
-import { BASE_X, ENEMY_BASE_X, GROUND_Y, LOGISTICS_MAX_LEVEL, VIEW_HEIGHT, VIEW_WIDTH } from '../game/constants';
+import {
+  BASE_X,
+  ENEMY_BASE_X,
+  GROUND_Y,
+  LOGISTICS_MAX_LEVEL,
+  VIEW_HEIGHT,
+  VIEW_WIDTH,
+} from '../game/constants';
+import { environmentRules } from '../game/environment';
 import { UNIT_STATS, type UnitKind } from '../game/units';
 import type { TugState, Unit } from '../game/tugTypes';
 import { computeGameViewport, type GameViewport } from '../platform/Viewport';
 import { Battlefield } from './battlefield';
+import { drawBattleFeatures } from './battleFeatures';
 import { drawMuzzleFlash, drawMuzzleSmoke, drawParticles, drawShadow } from './effects';
 import {
   drawCorpse,
@@ -32,7 +41,15 @@ import {
   drawTank,
   drawUnitIcon,
 } from './figures';
-import { FONT, SCENE, helmetFor, paletteFor, type FactionPalette } from './palette';
+import {
+  FONT,
+  SCENE,
+  helmetFor,
+  paletteFor,
+  sceneLook,
+  type FactionPalette,
+} from './palette';
+import { drawAtmosphere } from './weather';
 
 export interface BattleHudInfo {
   readonly nodeName: string;
@@ -117,7 +134,10 @@ export class BattleRenderer {
     const allyPalette = paletteFor(hud.faction);
     const enemyPalette = paletteFor(hud.enemyFaction);
 
+    // Re-light the terrain for this sector, then lay the terrain features on it.
+    this.background.setEnvironment(state.environment);
     this.background.draw(ctx, { focusX: state.focusX, time: state.time });
+    drawBattleFeatures(ctx, state.features, sceneLook(state.environment), state.time);
 
     // Structures first: troops stand in front of their own emplacement.
     drawStrongpoint(ctx, {
@@ -169,6 +189,15 @@ export class BattleRenderer {
 
     this.drawProjectiles(ctx, state);
     drawParticles(ctx, state.particles, 'front');
+
+    // Weather goes over everything in the world: snow in front of the troops,
+    // a sandstorm washing out the distance, darkness and searchlights at night.
+    drawAtmosphere(ctx, {
+      environment: state.environment,
+      rules: environmentRules(state.environment),
+      time: state.time,
+      searchlights: state.searchlights,
+    });
   }
 
   private drawUnit(
@@ -217,6 +246,38 @@ export class BattleRenderer {
       if (unit.kind === 'tank') {
         drawMuzzleSmoke(ctx, muzzle.muzzleX, muzzle.muzzleY, unit.facing, 0.8);
       }
+    }
+
+    // A soldier holding a dugout gets a parapet tick; one caught in a
+    // searchlight is rimmed in warm light, because that is what is hurting him.
+    if (unit.trenchCover) {
+      ctx.save();
+      ctx.globalAlpha = 0.75;
+      ctx.strokeStyle = '#8f9d6a';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(unit.x - 9, GROUND_Y - 3);
+      ctx.lineTo(unit.x + 9, GROUND_Y - 3);
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (unit.illuminated) {
+      ctx.save();
+      const halo = ctx.createRadialGradient(
+        unit.x,
+        GROUND_Y - stats.height * 0.5,
+        2,
+        unit.x,
+        GROUND_Y - stats.height * 0.5,
+        stats.height,
+      );
+      halo.addColorStop(0, 'rgba(255, 246, 206, 0.34)');
+      halo.addColorStop(1, 'rgba(255, 246, 206, 0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(unit.x, GROUND_Y - stats.height * 0.5, stats.height, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
 
     // Suppressed troops show a small marker so the MG's effect is visible.
@@ -329,9 +390,13 @@ export class BattleRenderer {
     ctx.fillStyle = state.timeLeft < 30 ? SCENE.warning : SCENE.hud;
     ctx.fillText(`${minutes}:${String(seconds).padStart(2, '0')}`, cx, 26);
 
-    ctx.font = `600 13px ${FONT}`;
+    ctx.font = `600 12px ${FONT}`;
     ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText(`${hud.nodeName} · ${hud.year} · tier ${hud.tier}`, cx, 46);
+    ctx.fillText(`${hud.nodeName} · ${hud.year} · tier ${hud.tier}`, cx, 44);
+    // The objective and the weather, because both change how the battle is won.
+    ctx.font = `700 10.5px ${FONT}`;
+    ctx.fillStyle = SCENE.warning;
+    ctx.fillText(this.situationText(state), cx, 57);
 
     // Supplies readout under the clock, left of centre.
     this.drawCurrency(ctx, cx - 150, 20, 'SUPPLIES', Math.floor(state.supplies), `+${state.supplyRate.toFixed(1)}/s`, SCENE.hud);
@@ -340,7 +405,11 @@ export class BattleRenderer {
     ctx.textAlign = 'left';
     ctx.font = `500 11px ${FONT}`;
     ctx.fillStyle = SCENE.hudDim;
-    ctx.fillText(`${hud.fps.toFixed(0)} fps`, 16, TOP_BAR_HEIGHT - 6);
+    ctx.fillText(
+      `${hud.fps.toFixed(0)} fps · ${environmentRules(state.environment).hint}`,
+      16,
+      TOP_BAR_HEIGHT - 6,
+    );
     ctx.textAlign = 'right';
     ctx.fillText(`fielded ${state.stats.deployed} · kills ${state.stats.kills}`, VIEW_WIDTH - 16, TOP_BAR_HEIGHT - 6);
     ctx.textAlign = 'left';
@@ -443,12 +512,19 @@ export class BattleRenderer {
       ctx.fillStyle = SCENE.hudDim;
       ctx.fillText(this.unitBlurb(slot.kind), rect.x + 60, rect.y + 38, rect.w - 66);
 
+      const stats = UNIT_STATS[slot.kind];
+      const price = option ? option.cost : stats.cost;
+      const surcharged = price !== stats.cost;
       ctx.font = `700 14px ${FONT}`;
       ctx.fillStyle = affordable ? SCENE.hud : SCENE.enemyHp;
-      ctx.fillText(`${UNIT_STATS[slot.kind].cost}`, rect.x + 62, rect.y + 74);
+      ctx.fillText(`${price}`, rect.x + 62, rect.y + 74);
       ctx.font = `500 10px ${FONT}`;
-      ctx.fillStyle = SCENE.hudDim;
-      ctx.fillText('supplies', rect.x + 62 + ctx.measureText(`${UNIT_STATS[slot.kind].cost}`).width + 6, rect.y + 74);
+      ctx.fillStyle = surcharged ? SCENE.warning : SCENE.hudDim;
+      ctx.fillText(
+        surcharged ? 'supplies · terrain' : 'supplies',
+        rect.x + 62 + ctx.measureText(`${price}`).width + 6,
+        rect.y + 74,
+      );
       ctx.globalAlpha = 1;
 
       // Hotkey badge.
@@ -530,6 +606,21 @@ export class BattleRenderer {
     ctx.font = `500 10px ${FONT}`;
     ctx.fillStyle = SCENE.hudDim;
     ctx.fillText('front line', barX, frontBarY + 22);
+  }
+
+  /** One line telling the player what this sector wants and what it is doing. */
+  private situationText(state: TugState): string {
+    const objective =
+      state.missionType === 'survive_timer'
+        ? 'HOLD THE LINE'
+        : state.missionType === 'assault'
+          ? 'ASSAULT THE STRONGPOINT'
+          : 'DESTROY THE STRONGPOINT';
+    const rules = environmentRules(state.environment);
+    const weather = rules.id === 'standard' ? '' : ` · ${rules.label.toUpperCase()}`;
+    const supplies =
+      Math.abs(state.supplyRate - 2) > 0.001 ? ` · SUPPLIES +${state.supplyRate.toFixed(1)}/s` : '';
+    return `${objective}${weather}${supplies}`;
   }
 
   private unitBlurb(kind: UnitKind): string {

@@ -25,6 +25,9 @@ import {
   upgradeEffectLabel,
 } from '../core/progression';
 import { THEATERS } from '../data/campaignData';
+import { environmentRules } from '../game/environment';
+import { effectiveSupplyRate } from '../game/match';
+import { featureLabel, missionDetail, missionLabel, stageTagline } from '../game/stageInfo';
 import { UNIT_ORDER, UNIT_STATS } from '../game/units';
 import type { BattleOutcome } from './Match';
 import { escapeHtml, fine, formatNumber } from './dom';
@@ -35,6 +38,22 @@ import { escapeHtml, fine, formatNumber } from './dom';
  * battlefield itself is drawn from paths.
  */
 const MAP_URL = `${import.meta.env.BASE_URL}assets/maps/europe_blank_laea.svg`;
+
+/** Glyph shown next to a node for its weather, so the map reads at a glance. */
+function environmentGlyph(stage: StageDefinition): string {
+  switch (stage.environment) {
+    case 'snow':
+      return '❄';
+    case 'desert':
+      return '☀';
+    case 'mud':
+      return '≋';
+    case 'night':
+      return '☾';
+    default:
+      return '';
+  }
+}
 
 function factionName(faction: Faction): string {
   return FACTION_INFO.find((info) => info.id === faction)?.name ?? faction;
@@ -125,9 +144,15 @@ function nodeHtml(state: CampaignNodeState): string {
   return `
     <button type="button" class="${classes}" style="left:${stage.coords.x}%;top:${stage.coords.y}%"
             data-action="open-briefing" data-stage="${stage.id}"
-            title="${escapeHtml(`${stage.index}. ${stage.name} (${stage.year}) — ${stage.bossName} · ${statusLabel(state)}`)}">
+            title="${escapeHtml(
+              `${stage.index}. ${stage.name} (${stage.year}) — ${stage.bossName} · ${statusLabel(state)} · ${stageTagline(stage)}`,
+            )}">
       <span class="node-dot">${stage.index}</span>
-      ${showLabel ? `<span class="node-label">${escapeHtml(stage.name)}</span>` : ''}
+      ${
+        showLabel
+          ? `<span class="node-label">${escapeHtml(`${environmentGlyph(stage)}${environmentGlyph(stage) ? ' ' : ''}${stage.name}`)}</span>`
+          : ''
+      }
     </button>`;
 }
 
@@ -151,6 +176,16 @@ export function mapScreenHtml(save: SaveData): string {
     .map(([status, label]) => `<span class="legend-item"><i class="swatch swatch--${status}"></i>${label}</span>`)
     .join('');
 
+  // Weather key: the glyph a node carries, and what it does to the battle.
+  const weatherLegend = (['snow', 'desert', 'mud', 'night'] as const)
+    .map((environment) => {
+      const rules = environmentRules(environment);
+      return `<span class="legend-item" title="${escapeHtml(rules.summary)}"><i class="swatch swatch--env">${
+        environment === 'snow' ? '❄' : environment === 'desert' ? '☀' : environment === 'mud' ? '≋' : '☾'
+      }</i>${escapeHtml(rules.label)} <span class="legend-hint">${escapeHtml(rules.hint)}</span></span>`;
+    })
+    .join('');
+
   return `
     <section class="screen screen--map">
       <div class="map-meta">
@@ -161,6 +196,7 @@ export function mapScreenHtml(save: SaveData): string {
           <span class="stat"><b>${formatNumber(save.warBonds)}</b> war bonds</span>
         </div>
         <div class="legend">${legend}</div>
+        <div class="legend legend--env">${weatherLegend}</div>
       </div>
       <div class="map">
         <img class="map-bg" src="${MAP_URL}" alt="European theatre map" />
@@ -188,10 +224,27 @@ export function briefingHtml(stage: StageDefinition, save: SaveData): string {
   const cleared = record ? record.wins > 0 : false;
   const locked = !save.unlockedStages.includes(stage.id);
 
+  const rules = environmentRules(stage.environment);
+  const supplyRate = effectiveSupplyRate(stage).toFixed(1);
   const rows: (readonly [string, string])[] = [
     ['theatre', `${stage.theater} · ${stage.year}`],
     ['grid', `x ${stage.coords.x}% · y ${stage.coords.y}%`],
+    ['mission', `${missionLabel(stage.missionType)} — ${missionDetail(stage.missionType)}`],
     ['strongpoint', stage.bossName],
+    [
+      'conditions',
+      stage.environment === 'standard' ? rules.label : `${rules.label} — ${rules.summary}`,
+    ],
+    [
+      'terrain',
+      stage.features.length > 0
+        ? stage.features.map((feature) => featureLabel(feature)).join(', ')
+        : 'open ground',
+    ],
+    [
+      'supply rate',
+      `${supplyRate}/s${Math.abs(stage.supplyRateMultiplier - 1) > 0.001 ? ` (×${stage.supplyRateMultiplier})` : ''}`,
+    ],
     ['enemy tier', `${stage.tier} of 9 · ${stage.faction === 'allied' ? 'Axis' : 'Allied'} forces`],
     ['reward', `${stage.rewardBonds} war bonds`],
     ['status', cleared ? 'cleared' : locked ? 'locked' : 'open'],
@@ -220,8 +273,8 @@ export function briefingHtml(stage: StageDefinition, save: SaveData): string {
         .join('')}
     </dl>
     <p class="fine">Command your line from the deployment bar: supplies arrive
-    continuously (2/s, faster with logistics upgrades), and bonds dropped by
-    destroyed enemy units buy those upgrades mid-battle.</p>
+    continuously (${supplyRate}/s here, before logistics upgrades), and bonds
+    dropped by destroyed enemy units buy those upgrades mid-battle.</p>
     ${
       locked
         ? fine('This sector is not open yet — clear the preceding node first.')
@@ -243,10 +296,14 @@ export interface CampView {
   readonly stageIndex: number;
   readonly objective: string;
   readonly tier: number;
+  /** One-line description of the next objective's mission, weather and terrain. */
+  readonly objectiveTagline: string;
   /** The army's current standard rifle, from the campaign weapon table. */
   readonly standardRifle: string;
   readonly standardRifleDetail: string;
   readonly startSupplies: number;
+  /** Supplies per second this sector actually pays. */
+  readonly supplyRate: number;
   readonly baseHp: number;
   readonly damageMultiplier: number;
   readonly fireRateMultiplier: number;
@@ -309,6 +366,7 @@ export function campHtml(save: SaveData, view: CampView): string {
       <h2>Armoury &amp; replacements</h2>
       <p class="lede">War bonds: <b>${formatNumber(save.warBonds)}</b> · next objective
       <b>${escapeHtml(view.objective)}</b> (tier ${view.tier})</p>
+      <p class="fine">${escapeHtml(view.objectiveTagline)}</p>
     </div>
     <div class="camp-grid">
       <section class="camp-block">
@@ -319,6 +377,7 @@ export function campHtml(save: SaveData, view: CampView): string {
         </div>
         <ul class="loadout">
           <li><span>supplies at deploy</span><b>${formatNumber(view.startSupplies)}</b></li>
+          <li><span>supply rate here</span><b>${view.supplyRate.toFixed(1)}/s</b></li>
           <li><span>base hit points</span><b>${formatNumber(view.baseHp)}</b></li>
           <li><span>unit damage</span><b>×${view.damageMultiplier.toFixed(2)}</b></li>
           <li><span>unit rate of fire</span><b>×${view.fireRateMultiplier.toFixed(2)}</b></li>
@@ -366,7 +425,9 @@ export function resultHtml(
     <div class="modal-head modal-head--${won ? 'win' : 'loss'}">
       <span class="modal-kicker">${escapeHtml(outcome.nodeName)} · ${escapeHtml(
         outcome.year,
-      )} · ${minutes}m ${String(seconds).padStart(2, '0')}s</span>
+      )} · ${minutes}m ${String(seconds).padStart(2, '0')}s · ${escapeHtml(
+        outcome.situation,
+      )}</span>
       <h2>${title}</h2>
     </div>
     <div class="result-grid">

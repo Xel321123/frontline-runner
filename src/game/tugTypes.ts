@@ -12,6 +12,12 @@
  */
 
 import type { Faction, StageId } from '../core/types';
+import type {
+  BattlefieldFeature,
+  Environment,
+  MissionType,
+} from '../data/campaignData';
+import type { FeatureLayout } from './features';
 import type { UnitKind } from './units';
 
 export type Side = 'player' | 'enemy';
@@ -41,6 +47,12 @@ export interface Unit {
   dugIn: boolean;
   /** Remaining suppression slow, seconds. */
   suppressed: number;
+  /** Per-unit stop-distance stagger (0.85..1.15), so a firing line spreads. */
+  rangeJitter: number;
+  /** Caught in a searchlight beam: takes extra damage at night. */
+  illuminated: boolean;
+  /** Holding a dugout: takes a fraction of incoming projectile damage. */
+  trenchCover: boolean;
   /** Spawn scale-in animation, 0..1. */
   spawn: number;
   /** Facing: +1 toward the enemy base for the player, -1 for the enemy. */
@@ -124,6 +136,10 @@ export interface MatchStats {
   logisticsBought: number;
   /** Damage dealt to the enemy strongpoint. */
   baseDamage: number;
+  /** Buried mines the player's units set off. */
+  minesHit: number;
+  /** Mines the enemy's units set off. */
+  enemyMinesHit: number;
 }
 
 export interface DeployOption {
@@ -145,11 +161,21 @@ export interface MatchConfig {
   readonly strongpoint: string;
   readonly faction: Faction;
   readonly enemyFaction: Faction;
+  /** How this sector is won. */
+  readonly missionType: MissionType;
+  /** Weather and light, which modify movement, range and damage. */
+  readonly environment: Environment;
+  /** Static terrain to lay out on the field. */
+  readonly features: readonly BattlefieldFeature[];
+  /** The stage's own multiplier on the player's supply generation. */
+  readonly supplyRateMultiplier: number;
   readonly playerBaseHp: number;
   readonly enemyBaseHp: number;
   readonly startSupplies: number;
   readonly supplyBaseRate: number;
   readonly enemySupplyRate: number;
+  /** Seconds between enemy deployments (shorter when it is the attacker). */
+  readonly enemyDeployInterval: number;
   /** Multipliers from campaign upgrades. */
   readonly damageMultiplier: number;
   readonly fireRateMultiplier: number;
@@ -164,6 +190,13 @@ export interface TugState {
   readonly lossReason: LossReason;
   readonly time: number;
   readonly timeLeft: number;
+  /** How this sector is won (affects what the HUD tells the player). */
+  readonly missionType: MissionType;
+  readonly environment: Environment;
+  /** Searchlight beam centres, empty unless it is a night battle. */
+  readonly searchlights: readonly number[];
+  /** Static terrain on the field, with live damage/occupancy state. */
+  readonly features: FeatureLayout;
   readonly supplies: number;
   readonly supplyRate: number;
   readonly bonds: number;
@@ -198,6 +231,8 @@ export type SimEventType =
   | 'playerUnitDown'
   | 'baseHit'
   | 'baseDestroyed'
+  | 'mineBlast'
+  | 'trenchOverrun'
   | 'logisticsUpgrade'
   | 'victory'
   | 'defeat';

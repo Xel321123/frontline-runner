@@ -66,6 +66,29 @@ export const MAX_UNITS_PER_SIDE = 24;
  * a battle ends.
  */
 export const MATCH_TIME_LIMIT = 165;
+/** How long a `survive_timer` sector must be held. */
+export const SURVIVE_SECONDS = 120;
+/** An `assault` faces a prepared position: stronger, but the attacker is ready. */
+export const ASSAULT_BASE_HP_MULTIPLIER = 1.25;
+/**
+ * In a `survive_timer` battle the enemy is the attacker and is reinforced: the
+ * player is meant to have to *hold*, not simply wait out the clock. The supply
+ * bonus alone is not enough — with one attacker arriving at a time a defensive
+ * gun picks them off — so the enemy also feeds units faster.
+ */
+export const SURVIVE_ENEMY_SUPPLY_BONUS = 1.6;
+export const SURVIVE_ENEMY_DEPLOY_INTERVAL = 1.7;
+/**
+ * The defender in a survival battle is dug in with its dumps alongside it, so
+ * it generates supplies faster than a force on the move.
+ */
+export const SURVIVE_DEFENDER_SUPPLY_BONUS = 1.5;
+/**
+ * An `assault` has to cross ground that favours the defender — trenches, mines,
+ * reduced visibility — so the attacker is given the supply throughput to keep
+ * feeding the push.
+ */
+export const ASSAULT_ATTACKER_SUPPLY_BONUS = 1.25;
 /** Minimum gap between the player's own deployments (stops click spamming). */
 export const PLAYER_DEPLOY_COOLDOWN = 0.35;
 /** Enemy hit points grow with the campaign tier. */
@@ -80,6 +103,23 @@ export const BASE_HALF_WIDTH = 44;
 
 /** Minimum fraction of a hit that always lands, so armour never immunises. */
 export const MIN_DAMAGE_FRACTION = 0.25;
+
+// --- static battlefield features --------------------------------------------
+/** Width of one dugout zone (an x-range, since the field is a single lane). */
+export const TRENCH_WIDTH = 96;
+/** Projectile damage multiplier for infantry holding a trench (−70%). */
+export const TRENCH_DAMAGE_MULTIPLIER = 0.3;
+/** A hostile this close to a held trench overruns it and the cover is lost. */
+export const TRENCH_OVERRUN_RANGE = 46;
+/** Damage a mine does to whatever walks over it, in one burst. */
+export const MINE_DAMAGE = 45;
+/** How close a unit must come to a buried mine to set it off. */
+export const MINE_TRIGGER_RADIUS = 7;
+/** Spacing between mines in a belt, before tier scaling tightens it. */
+export const MINE_SPACING = 26;
+/** Breadth of a bridge span, and how many units of one side may hold it. */
+export const BRIDGE_WIDTH = 150;
+export const BRIDGE_CAPACITY_PER_SIDE = 3;
 
 // --- suppression ------------------------------------------------------------
 export const SUPPRESS_TIME = 0.7;

@@ -48,7 +48,6 @@ import {
   CORPSE_LIFE,
   ENEMY_ARMOUR_DELAY,
   ENEMY_BASE_X,
-  ENEMY_DEPLOY_INTERVAL,
   ENEMY_DEPLOY_JITTER,
   ENEMY_HP_PER_TIER_SCALE,
   GROUND_Y,
@@ -56,8 +55,9 @@ import {
   LOGISTICS_COST_STEP,
   LOGISTICS_MAX_LEVEL,
   MATCH_TIME_LIMIT,
+  MINE_DAMAGE,
+  MINE_TRIGGER_RADIUS,
   MAX_UNITS_PER_SIDE,
-  MIN_DAMAGE_FRACTION,
   MUZZLE_FLASH_TIME,
   PARTICLE_CAP,
   PARTICLE_GRAVITY,
@@ -68,10 +68,26 @@ import {
   SHAKE_DECAY,
   SUPPRESSED_SPEED_MULTIPLIER,
   SUPPRESS_TIME,
+  SURVIVE_SECONDS,
+  TRENCH_OVERRUN_RANGE,
   SUPPLY_CAP,
   SUPPLY_PER_LOGISTICS_LEVEL,
   VIEW_WIDTH,
 } from './constants';
+import { incomingDamage } from './damage';
+import {
+  environmentRules,
+  searchlightPositions,
+  SEARCHLIGHT_HALF_WIDTH,
+  type EnvironmentRules,
+} from './environment';
+import {
+  bridgeAt,
+  createFeatureLayout,
+  recountBridges,
+  trenchAt,
+  type FeatureLayout,
+} from './features';
 
 /** In-match logistics upgrade cost for the next level. */
 export function logisticsCost(level: number): number | null {
@@ -92,9 +108,17 @@ function makeParticle(
   return { kind, x, y, vx, vy, life, maxLife: life, size, spin };
 }
 
+/** No beams at all — shared so a non-night battle allocates nothing per step. */
+const EMPTY_BEAMS: readonly number[] = [];
+
 export class TugSimulation {
   private readonly config: MatchConfig;
   private readonly rng: Rng;
+  /** Weather and light rules for this sector. */
+  private readonly rules: EnvironmentRules;
+  /** Static terrain: dugouts, mine belts and bridge spans. */
+  private readonly layout: FeatureLayout;
+  private searchlightValue: readonly number[] = EMPTY_BEAMS;
 
   private statusValue: MatchStatus = 'running';
   private lossReasonValue: LossReason = null;
@@ -126,11 +150,19 @@ export class TugSimulation {
     suppliesGenerated: 0,
     logisticsBought: 0,
     baseDamage: 0,
+    minesHit: 0,
+    enemyMinesHit: 0,
   };
 
   constructor(config: MatchConfig) {
     this.config = config;
     this.rng = createRng(config.seed);
+    this.rules = environmentRules(config.environment);
+    this.layout = createFeatureLayout({
+      seed: config.nodeId,
+      features: config.features,
+      tier: config.tier,
+    });
     this.suppliesValue = config.startSupplies;
     // The enemy opens with a comparable bank so the first contact is not a walkover.
     this.enemySuppliesValue = config.startSupplies;
@@ -166,7 +198,11 @@ export class TugSimulation {
       status: this.statusValue,
       lossReason: this.lossReasonValue,
       time: this.timeValue,
-      timeLeft: Math.max(0, MATCH_TIME_LIMIT - this.timeValue),
+      timeLeft: Math.max(0, this.timeLimit() - this.timeValue),
+      missionType: this.config.missionType,
+      environment: this.config.environment,
+      searchlights: this.searchlightValue,
+      features: this.layout,
       supplies: this.suppliesValue,
       supplyRate: this.supplyRate,
       bonds: this.bondsValue,
@@ -201,6 +237,7 @@ export class TugSimulation {
       this.updateEconomy(dt);
       this.handleCommand(dt, command);
       this.updateEnemyAI(dt);
+      this.updateBattlefield();
       this.updateUnits(dt);
       this.updateBaseGuns(dt);
       this.updateProjectiles(dt);
@@ -236,7 +273,7 @@ export class TugSimulation {
 
     if (command.deploy && this.playerDeployCooldown <= 0) {
       const kind = command.deploy;
-      const cost = unitStats(kind).cost;
+      const cost = this.unitCostFor(kind);
       if (this.suppliesValue >= cost && this.countUnits('player') < MAX_UNITS_PER_SIDE) {
         this.suppliesValue -= cost;
         this.spawnUnit('player', kind);
@@ -254,7 +291,7 @@ export class TugSimulation {
       options.push({
         kind,
         name: stats.name,
-        cost: stats.cost,
+        cost: this.unitCostFor(kind),
         affordable: this.suppliesValue >= stats.cost,
         ready:
           this.suppliesValue >= stats.cost && this.countUnits('player') < MAX_UNITS_PER_SIDE,
@@ -280,7 +317,7 @@ export class TugSimulation {
     const affordable = this.config.enemyMix.filter(
       (entry) =>
         (armourUnlocked || entry.kind !== 'tank') &&
-        unitStats(entry.kind).cost <= this.enemySuppliesValue,
+        this.unitCostFor(entry.kind) <= this.enemySuppliesValue,
     );
     if (affordable.length === 0) {
       this.enemyDeployTimer = 0.5;
@@ -300,11 +337,11 @@ export class TugSimulation {
     }));
 
     const kind = this.rng.weighted(weighted);
-    this.enemySuppliesValue -= unitStats(kind).cost;
+    this.enemySuppliesValue -= this.unitCostFor(kind);
     this.spawnUnit('enemy', kind);
     this.emit({ type: 'enemyDeploy', kind });
     this.enemyDeployTimer =
-      ENEMY_DEPLOY_INTERVAL + this.rng.range(0, ENEMY_DEPLOY_JITTER);
+      this.config.enemyDeployInterval + this.rng.range(0, ENEMY_DEPLOY_JITTER);
   }
 
   // -------------------------------------------------------------------- units
@@ -329,6 +366,9 @@ export class TugSimulation {
       dig: 0,
       dugIn: false,
       suppressed: 0,
+      rangeJitter: this.rng.range(0.85, 1.15),
+      illuminated: false,
+      trenchCover: false,
       spawn: 0,
       facing,
       hpScale,
@@ -336,6 +376,101 @@ export class TugSimulation {
     this.nextId += 1;
     this.unitsValue.push(unit);
     return unit;
+  }
+
+  // ----------------------------------------------------- environment & terrain
+
+  /**
+   * Engagement range after weather, plus this unit's own stagger: without it
+   * every rifleman would stop on exactly the same pixel and the line would
+   * stack into a blob. The jitter is drawn from the seeded RNG, so a node still
+   * plays out identically every time.
+   */
+  private unitRange(unit: Unit): number {
+    return unitStats(unit.kind).range * this.rules.rangeMultiplier * unit.rangeJitter;
+  }
+
+  /** Movement speed after weather, vehicle handling and suppression. */
+  private unitSpeed(unit: Unit): number {
+    const stats = unitStats(unit.kind);
+    const terrain = unit.kind === 'tank' ? this.rules.vehicleSpeedMultiplier : 1;
+    const slow = unit.suppressed > 0 ? SUPPRESSED_SPEED_MULTIPLIER : 1;
+    return stats.speed * this.rules.moveSpeedMultiplier * terrain * slow;
+  }
+
+  /** Supply cost after terrain: armour costs half again as much in the mud. */
+  unitCostFor(kind: UnitKind): number {
+    const stats = unitStats(kind);
+    if (kind !== 'tank') return stats.cost;
+    return Math.round(stats.cost * this.rules.tankCostMultiplier);
+  }
+
+  /** A bridge span only holds so many units of one side at a time. */
+  private isBridgeFull(unit: Unit): boolean {
+    const bridge = bridgeAt(this.layout, unit.x + unit.facing * 6);
+    if (!bridge) return false;
+    return bridge.occupants[unit.side] >= bridge.capacity;
+  }
+
+  /**
+   * Terrain and light, once per step: who is dug into a trench, who is caught
+   * in a searchlight beam, and what has just walked onto a buried mine.
+   */
+  private updateBattlefield(): void {
+    recountBridges(this.layout, this.unitsValue);
+    this.searchlightValue = this.rules.searchlights
+      ? searchlightPositions(this.timeValue)
+      : EMPTY_BEAMS;
+
+    for (const unit of this.unitsValue) {
+      const stopped = unit.state !== 'advance';
+      // Only infantry use dugouts, and only while they are standing in one.
+      const trench = unit.kind === 'tank' ? null : trenchAt(this.layout, unit.x);
+      unit.trenchCover = Boolean(trench && stopped && trench.overrunBy === null);
+
+      if (trench && !trench.overrunBy && stopped) {
+        // A trench stops being cover the moment both sides are inside it.
+        const contested = this.unitsValue.some(
+          (other) =>
+            other.side !== unit.side &&
+            Math.abs(other.x - trench.x) <= trench.width / 2 + TRENCH_OVERRUN_RANGE,
+        );
+        if (contested) {
+          trench.overrunBy = unit.side === 'player' ? 'enemy' : 'player';
+          unit.trenchCover = false;
+          this.emit({ type: 'trenchOverrun' });
+        }
+      }
+
+      unit.illuminated = this.rules.searchlights
+        ? this.searchlightValue.some((beam) => Math.abs(beam - unit.x) <= SEARCHLIGHT_HALF_WIDTH)
+        : false;
+    }
+
+    if (this.layout.minefields.length > 0) this.updateMines();
+  }
+
+  /** Mine belts are neutral ground: they take whoever walks over them first. */
+  private updateMines(): void {
+    for (const belt of this.layout.minefields) {
+      if (belt.armed === 0) continue;
+      for (const mine of belt.mines) {
+        if (mine.exploded) continue;
+        for (const unit of this.unitsValue) {
+          if (Math.abs(unit.x - mine.x) > MINE_TRIGGER_RADIUS) continue;
+          mine.exploded = true;
+          belt.armed -= 1;
+          if (unit.side === 'player') this.statsValue.minesHit += 1;
+          else this.statsValue.enemyMinesHit += 1;
+          this.explosion(unit.x, GROUND_Y - 8, 26);
+          this.shakeValue = Math.max(this.shakeValue, 5);
+          this.emit({ type: 'mineBlast' });
+          // A mine is a burst of casualties, armoured or not.
+          this.hitUnit(unit, MINE_DAMAGE, 0);
+          break;
+        }
+      }
+    }
   }
 
   private countUnits(side: Side): number {
@@ -353,7 +488,8 @@ export class TugSimulation {
       unit.suppressed = Math.max(0, unit.suppressed - dt);
 
       const target = this.findTarget(unit);
-      if (target && Math.abs(target - unit.x) <= stats.range) {
+      // Sandstorms and the like cut the range at which anyone can engage.
+      if (target && Math.abs(target - unit.x) <= this.unitRange(unit)) {
         unit.state = 'engage';
         // Machine gunners dig in where they stop and gain cover.
         if (stats.digTime !== undefined) {
@@ -372,9 +508,11 @@ export class TugSimulation {
           unit.dugIn = false;
           unit.dig = 0;
         }
-        if (!this.isBlocked(unit)) {
-          const slow = unit.suppressed > 0 ? SUPPRESSED_SPEED_MULTIPLIER : 1;
-          unit.x += unit.facing * stats.speed * slow * dt;
+        // Units walk past each other to their own firing distance — a queue in
+        // single file would mean only the front man ever shoots. A bridge span
+        // is the one place they really cannot pass: it is a chokepoint.
+        if (!this.isBridgeFull(unit)) {
+          unit.x += unit.facing * this.unitSpeed(unit) * dt;
         }
       }
 
@@ -403,17 +541,6 @@ export class TugSimulation {
     const baseDistance = Math.abs(baseX - unit.x);
     if (baseDistance < bestDistance) return baseX;
     return best;
-  }
-
-  /** A unit cannot walk through the comrade in front of it. */
-  private isBlocked(unit: Unit): boolean {
-    const spacing = unitStats(unit.kind).spacing;
-    for (const other of this.unitsValue) {
-      if (other === unit || other.side !== unit.side) continue;
-      const ahead = (other.x - unit.x) * unit.facing;
-      if (ahead > 0 && ahead < spacing) return true;
-    }
-    return false;
   }
 
   private fire(unit: Unit, targetX: number): void {
@@ -558,10 +685,16 @@ export class TugSimulation {
 
   private hitUnit(unit: Unit, damage: number, suppress: number): void {
     const stats = unitStats(unit.kind);
-    // Armour subtracts damage, but never grants immunity: heavy plating should
-    // blunt small arms, not make a tank untouchable by an infantry line.
-    let applied = Math.max(damage * MIN_DAMAGE_FRACTION, damage - stats.armor);
-    if (unit.dugIn) applied *= 1 - (stats.dugInResist ?? 0);
+    // Armour, sandbags, a trench parapet and a searchlight silhouette all stack
+    // here; the maths lives in `damage.ts` so it can be asserted directly.
+    const applied = incomingDamage(damage, {
+      armor: stats.armor,
+      dugIn: unit.dugIn,
+      dugInResist: stats.dugInResist,
+      trenchCover: unit.trenchCover,
+      illuminated: unit.illuminated,
+      illuminatedDamageMultiplier: this.rules.illuminatedDamageMultiplier,
+    });
     unit.hp -= applied;
     if (suppress > 0) unit.suppressed = Math.max(unit.suppressed, SUPPRESS_TIME);
     if (unit.hp <= 0) this.killUnit(unit);
@@ -655,8 +788,18 @@ export class TugSimulation {
     }
   }
 
+  /** How long this sector lasts: a survival battle is shorter than a battle. */
+  private timeLimit(): number {
+    return this.config.missionType === 'survive_timer' ? SURVIVE_SECONDS : MATCH_TIME_LIMIT;
+  }
+
   private checkTimeLimit(): void {
-    if (this.timeValue < MATCH_TIME_LIMIT) return;
+    if (this.timeValue < this.timeLimit()) return;
+    // Holding out to the clock *is* the objective in a survival battle.
+    if (this.config.missionType === 'survive_timer') {
+      this.finish('victory', 'time-expired');
+      return;
+    }
     const playerFraction = this.playerBase.hp / this.playerBase.maxHp;
     const enemyFraction = this.enemyBase.hp / this.enemyBase.maxHp;
     // The attacker has to actually take ground: a draw counts as a defeat.

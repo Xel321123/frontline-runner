@@ -20,6 +20,7 @@ import {
 } from '../game/constants';
 import { logisticsAt, slotAt, kindForHotkey } from '../game/hud';
 import { createMatchConfig } from '../game/match';
+import { stageTagline } from '../game/stageInfo';
 import { TugSimulation } from '../game/TugSimulation';
 import type { MatchCommand, MatchStatus, SimEvent } from '../game/tugTypes';
 import type { UnitKind } from '../game/units';
@@ -33,6 +34,8 @@ export interface BattleOutcome {
   readonly year: string;
   readonly status: MatchStatus;
   readonly lossReason: 'base-destroyed' | 'time-expired' | null;
+  /** Mission, weather and terrain, for the result panel's kicker. */
+  readonly situation: string;
   readonly durationSeconds: number;
   readonly bondsAwarded: number;
   readonly bondsCollected: number;
@@ -314,6 +317,7 @@ export class MatchSession {
       nodeId: stage.id,
       nodeName: stage.name,
       year: stage.year,
+      situation: stageTagline(stage),
       status: state.status,
       lossReason: state.lossReason,
       durationSeconds: state.time,

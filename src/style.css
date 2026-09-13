@@ -453,6 +453,28 @@ main {
   }
 }
 
+.legend--env {
+  margin-top: 6px;
+  opacity: 0.9;
+}
+
+.swatch--env {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: rgba(24, 32, 25, 0.9);
+  border: 1px solid var(--line);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.legend-hint {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
 .map-footer {
   display: flex;
   align-items: center;

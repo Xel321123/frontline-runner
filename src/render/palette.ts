@@ -7,6 +7,7 @@
  * apart at a glance in a 34 px-tall figure.
  */
 
+import type { Environment } from '../data/campaignData';
 import type { Faction } from '../core/types';
 
 export type HelmetShape = 'brodie' | 'm1' | 'stahlhelm';
@@ -110,3 +111,148 @@ export const SCENE = {
 } as const;
 
 export const FONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+
+// --- environment looks ------------------------------------------------------
+
+/**
+ * The colours that change with the weather. Everything in a look is the same
+ * *shape* of scene — hills, ruins, ground, road — re-lit for the environment,
+ * so the terrain painters stay identical and only the palette moves.
+ */
+export interface SceneLook {
+  readonly skyTop: string;
+  readonly skyMid: string;
+  readonly skyHaze: string;
+  readonly sunGlow: string;
+  readonly cloud: string;
+  readonly hillFar: string;
+  readonly hillNear: string;
+  readonly ruinFar: string;
+  readonly ruinNear: string;
+  readonly smokeFar: string;
+  readonly smokeNear: string;
+  readonly groundFar: string;
+  readonly groundMid: string;
+  readonly groundNear: string;
+  readonly groundLine: string;
+  readonly road: string;
+  readonly crater: string;
+  readonly grass: string;
+  readonly grassDark: string;
+}
+
+export const SCENE_LOOKS: Readonly<Record<Environment, SceneLook>> = {
+  standard: {
+    skyTop: SCENE.skyTop,
+    skyMid: SCENE.skyMid,
+    skyHaze: SCENE.skyHaze,
+    sunGlow: SCENE.sunGlow,
+    cloud: SCENE.cloud,
+    hillFar: SCENE.hillFar,
+    hillNear: SCENE.hillNear,
+    ruinFar: SCENE.ruinFar,
+    ruinNear: SCENE.ruinNear,
+    smokeFar: SCENE.smokeFar,
+    smokeNear: SCENE.smokeNear,
+    groundFar: SCENE.groundFar,
+    groundMid: SCENE.groundMid,
+    groundNear: SCENE.groundNear,
+    groundLine: SCENE.groundLine,
+    road: SCENE.road,
+    crater: SCENE.crater,
+    grass: SCENE.grass,
+    grassDark: SCENE.grassDark,
+  },
+  // Snow: a flat white light, pale ground, almost no colour left in the scene.
+  snow: {
+    skyTop: '#4d5a72',
+    skyMid: '#8b96a6',
+    skyHaze: '#d9dde2',
+    sunGlow: 'rgba(226, 234, 240, 0.30)',
+    cloud: 'rgba(240, 244, 248, 0.32)',
+    hillFar: '#aeb7c2',
+    hillNear: '#98a3b0',
+    ruinFar: '#7d8590',
+    ruinNear: '#666e79',
+    smokeFar: 'rgba(120, 126, 134, 0.30)',
+    smokeNear: 'rgba(94, 100, 108, 0.34)',
+    groundFar: '#c9ced6',
+    groundMid: '#dde1e6',
+    groundNear: '#eff1f4',
+    groundLine: '#b3bac4',
+    road: 'rgba(150, 158, 170, 0.30)',
+    crater: 'rgba(120, 128, 140, 0.35)',
+    grass: '#b9c3bb',
+    grassDark: '#9aa69f',
+  },
+  // Desert: hot haze, ochre ground, bleached sky.
+  desert: {
+    skyTop: '#6d7f97',
+    skyMid: '#c3b189',
+    skyHaze: '#e8d6a8',
+    sunGlow: 'rgba(255, 226, 160, 0.38)',
+    cloud: 'rgba(238, 222, 186, 0.20)',
+    hillFar: '#b09a70',
+    hillNear: '#9c8659',
+    ruinFar: '#7d6a4a',
+    ruinNear: '#65553b',
+    smokeFar: 'rgba(150, 132, 100, 0.30)',
+    smokeNear: 'rgba(112, 98, 74, 0.34)',
+    groundFar: '#b79f70',
+    groundMid: '#c9b182',
+    groundNear: '#dcc79a',
+    groundLine: '#a58d61',
+    road: 'rgba(160, 140, 104, 0.30)',
+    crater: 'rgba(96, 78, 50, 0.42)',
+    grass: '#9c8f5c',
+    grassDark: '#82754a',
+  },
+  // Mud: everything brown, wet and low-contrast, with standing water.
+  mud: {
+    skyTop: '#3b3a34',
+    skyMid: '#5c5648',
+    skyHaze: '#8b7f66',
+    sunGlow: 'rgba(214, 186, 138, 0.18)',
+    cloud: 'rgba(196, 188, 172, 0.18)',
+    hillFar: '#4a453a',
+    hillNear: '#3d392f',
+    ruinFar: '#38342b',
+    ruinNear: '#2c2922',
+    smokeFar: 'rgba(96, 90, 74, 0.30)',
+    smokeNear: 'rgba(74, 68, 56, 0.36)',
+    groundFar: '#544732',
+    groundMid: '#453929',
+    groundNear: '#332a1e',
+    groundLine: '#5f5039',
+    road: 'rgba(96, 82, 60, 0.34)',
+    crater: 'rgba(20, 16, 10, 0.55)',
+    grass: '#4f4c2c',
+    grassDark: '#3a3720',
+  },
+  // Night: near-monochrome blue, with a cold moon haze where the sun was.
+  night: {
+    skyTop: '#080c16',
+    skyMid: '#121a2a',
+    skyHaze: '#233046',
+    sunGlow: 'rgba(150, 178, 210, 0.16)',
+    cloud: 'rgba(120, 140, 170, 0.14)',
+    hillFar: '#161d2a',
+    hillNear: '#101620',
+    ruinFar: '#121722',
+    ruinNear: '#0c1018',
+    smokeFar: 'rgba(70, 80, 96, 0.26)',
+    smokeNear: 'rgba(48, 56, 70, 0.32)',
+    groundFar: '#26241f',
+    groundMid: '#1c1b17',
+    groundNear: '#121110',
+    groundLine: '#2e2b24',
+    road: 'rgba(80, 86, 96, 0.22)',
+    crater: 'rgba(6, 8, 10, 0.6)',
+    grass: '#2a2f22',
+    grassDark: '#1e2218',
+  },
+};
+
+export function sceneLook(environment: Environment): SceneLook {
+  return SCENE_LOOKS[environment] ?? SCENE_LOOKS.standard;
+}

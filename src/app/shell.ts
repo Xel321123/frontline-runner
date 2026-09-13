@@ -17,7 +17,8 @@ import { isFaction, isUpgradeId } from '../core/types';
 import type { Faction } from '../core/types';
 import type { GameStorage, SoundName } from '../engine';
 import { createGameStorage, SoundManager } from '../engine';
-import { createMatchConfig } from '../game/match';
+import { createMatchConfig, effectiveSupplyRate } from '../game/match';
+import { stageTagline } from '../game/stageInfo';
 import { UNIT_ORDER } from '../game/units';
 import type { CanvasSurface, OrientationLockResult } from '../platform/Display';
 import {
@@ -130,10 +131,12 @@ export async function startShell(root: HTMLElement): Promise<void> {
       faction,
       stageIndex: objective.index,
       objective: `${objective.name} (${objective.year})`,
+      objectiveTagline: stageTagline(objective),
       tier: objective.tier,
       standardRifle: weapon.name,
       standardRifleDetail: `${weapon.caliber} · ${weapon.year} · ${weapon.damage} dmg · ${weapon.fireRate}/s · ±${weapon.spread}° · ${weapon.magazineSize} rounds`,
       startSupplies: config.startSupplies,
+      supplyRate: effectiveSupplyRate(objective),
       baseHp: config.playerBaseHp,
       damageMultiplier: config.damageMultiplier,
       fireRateMultiplier: config.fireRateMultiplier,

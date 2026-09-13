@@ -208,6 +208,78 @@ for (const faction of ['allied', 'axis']) {
   );
 }
 
+// --- tactical configuration (mission, environment, terrain, supply) ---------
+
+const MISSIONS = ['destroy_base', 'survive_timer', 'assault'];
+const ENVIRONMENTS = ['standard', 'snow', 'desert', 'mud', 'night'];
+const BATTLE_FEATURES = ['trenches', 'minefield', 'bridge_chokepoint'];
+
+for (const faction of ['allied', 'axis']) {
+  const stages = progression.stagesForFaction(faction);
+  const missions = new Set();
+  const environments = new Set();
+  const features = new Set();
+
+  for (const stage of stages) {
+    check(
+      MISSIONS.includes(stage.missionType),
+      `${stage.id}: missionType "${stage.missionType}" is not one of ${MISSIONS.join('/')}`,
+    );
+    check(
+      ENVIRONMENTS.includes(stage.environment),
+      `${stage.id}: environment "${stage.environment}" is not one of ${ENVIRONMENTS.join('/')}`,
+    );
+    check(
+      Array.isArray(stage.features) && stage.features.every((f) => BATTLE_FEATURES.includes(f)),
+      `${stage.id}: features [${stage.features}] must only contain ${BATTLE_FEATURES.join('/')}`,
+    );
+    check(
+      new Set(stage.features).size === stage.features.length,
+      `${stage.id}: features must not repeat`,
+    );
+    check(
+      Number.isFinite(stage.supplyRateMultiplier) &&
+        stage.supplyRateMultiplier >= 0.5 &&
+        stage.supplyRateMultiplier <= 2,
+      `${stage.id}: supplyRateMultiplier ${stage.supplyRateMultiplier} outside 0.5..2`,
+    );
+    missions.add(stage.missionType);
+    environments.add(stage.environment);
+    for (const feature of stage.features) features.add(feature);
+  }
+
+  // The brief asks for diverse tactical environments across the campaign.
+  check(environments.size >= 4, `${faction}: only ${environments.size} environments used`);
+  check(missions.size === 3, `${faction}: expected all three mission types, got ${missions.size}`);
+  check(features.size === 3, `${faction}: expected all three features, got ${features.size}`);
+  notes.push(
+    `${faction}: missions ${[...missions].join('/')} · environments ${[...environments].join('/')} · features ${[...features].join('/')}`,
+  );
+}
+
+// Historical anchors: these are the examples the design brief calls out, so a
+// future edit that "tidies" the data has to do so deliberately.
+const anchors = [
+  ['allied-07', 'Moscow is snow', (s) => s.environment === 'snow'],
+  ['allied-27', 'Bastogne is snow', (s) => s.environment === 'snow'],
+  ['allied-10', 'El Alamein is desert', (s) => s.environment === 'desert'],
+  ['allied-06', 'Tobruk is desert', (s) => s.environment === 'desert'],
+  ['allied-14', 'Kursk is mud', (s) => s.environment === 'mud'],
+  ['axis-12', 'Rzhev is mud', (s) => s.environment === 'mud'],
+  ['allied-09', 'Dieppe is night', (s) => s.environment === 'night'],
+  ['allied-29', 'Seelow Heights is night', (s) => s.environment === 'night'],
+  ['allied-25', 'Market Garden is a bridge chokepoint', (s) => s.features.includes('bridge_chokepoint')],
+  ['allied-28', 'Remagen is a bridge chokepoint', (s) => s.features.includes('bridge_chokepoint')],
+  ['allied-11', 'Stalingrad is a supply shortage (0.7)', (s) => s.supplyRateMultiplier === 0.7],
+  ['axis-01', 'Poland is a blitzkrieg (1.4)', (s) => s.supplyRateMultiplier === 1.4],
+  ['allied-02', 'Dunkirk is a survival battle', (s) => s.missionType === 'survive_timer'],
+  ['allied-18', 'Monte Cassino is an assault on trenches', (s) => s.missionType === 'assault' && s.features.includes('trenches')],
+];
+for (const [id, description, predicate] of anchors) {
+  const stage = progression.getStage(id);
+  check(Boolean(stage) && predicate(stage), `anchor: ${description}`);
+}
+
 // --- report ----------------------------------------------------------------
 
 const weaponCounts = `allied ${data.ALLIED_WEAPONS.length} / axis ${data.AXIS_WEAPONS.length}`;

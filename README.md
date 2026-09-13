@@ -35,13 +35,44 @@ restructuring.
   base loses it. A 3-minute clock decides stalemates on remaining base health,
   and a draw counts as a defeat — the attacker has to actually take ground.
 
+## Tactical environments
+
+Every one of the 60 campaign nodes is authored with its own tactical shape —
+how it is won, what the weather does, what terrain it is fought over and how
+supplies are flowing. These are history rather than decoration: El Alamein was a
+minefield in the desert, Arnhem was a bridge, Bastogne was snow, Seelow was
+attacked at night behind searchlights.
+
+| Environment | Battlefield effect | Scene |
+| --- | --- | --- |
+| **Snow** (Moscow, Bastogne) | all ground units move **35% slower** | white-out ground, falling snow, flat cold light |
+| **Desert** (El Alamein, Tobruk) | maximum weapon engagement range is **halved** | sandstorm haze, drifting sand streaks, bleached ochre ground |
+| **Mud** (Kursk, Rzhev) | armour costs **+50%**, vehicles traverse **40% slower** | churned brown ground, standing water, ground mist |
+| **Night** (Dieppe, Seelow) | units caught in a searchlight beam take **+50% damage** | darkened scene with animated sweeping beams and lit pools |
+
+| Feature | Effect |
+| --- | --- |
+| **Trenches** | dugout zones in no-man's-land; infantry that stop inside take **−70% projectile damage** until the position is overrun by the other side |
+| **Minefield** | marked belts of buried mines; anything crossing sets one off for a burst of casualties and consumes it (neutral — they take whoever goes first) |
+| **Bridge chokepoint** | a narrow span (Arnhem, Remagen, the Dnieper, Narva) that holds only **three units per side** at a time, funnelling an attack into a column |
+
+| Mission | Win condition |
+| --- | --- |
+| **destroy_base** | break the strongpoint |
+| **assault** | break a *reinforced* strongpoint (×1.25 hp) — the attacker has stockpiled supplies for the push |
+| **survive_timer** | hold your own base for 120 seconds; the enemy is the attacker and is reinforced, you are dug in with your dumps |
+
+Supply flow is per node too (`supplyRateMultiplier`, 0.7 for a besieged force up
+to 1.4 for a blitzkrieg), and the briefing modal, the camp screen and the map all
+report the real in-battle figure rather than the base one.
+
 ## Screens
 
 | Screen | What it does |
 | --- | --- |
 | **Title** | Faction selection (Allies / Axis) with per-campaign totals, sound toggle, collapsible diagnostics |
-| **Campaign map** | The Europe SVG with all 30 node coordinates plotted: **grey** locked, **gold** next objective, **green** cleared, **red** contested. Clicking a node opens its briefing |
-| **Briefing modal** | Authentic two-sentence history, theatre, grid reference, strongpoint, difficulty tier, reward and the node's own record, with a Deploy button |
+| **Campaign map** | The Europe SVG with all 30 node coordinates plotted: **grey** locked, **gold** next objective, **green** cleared, **red** contested, each labelled with its weather glyph, plus a key for what each environment does. Clicking a node opens its briefing |
+| **Briefing modal** | Authentic two-sentence history, theatre, grid reference, mission type, weather and its modifier, terrain features, the sector's real supply rate, difficulty tier, reward and the node's own record, with a Deploy button |
 | **Camp / Armoury modal** | Supplies at deploy, base hit points, damage and rate-of-fire multipliers, the full unit roster with live stats, and the upgrade tracks bought with war bonds |
 | **Result modal** | Bonds awarded and collected, units deployed and lost, enemy destroyed, logistics bought, and both structures' remaining strength |
 | **Battle** | The tug of war itself, letterboxed into the available space |
@@ -136,9 +167,12 @@ rate, the logistics purchase, deployment costs, units stopping at range, the
 tank's arcing area blast and screen shake, the MG digging in and suppressing,
 bond drops, base destruction deciding the battle, and seed reproducibility) and
 then plays whole campaign nodes with three autopilots — do-nothing, steady
-riflemen, and adaptive. The bracket: **do-nothing must lose every node, adaptive
-must win the sampled nodes, and the simulation must stay far inside the 16.6 ms
-frame budget** (measured 2–5 µs per tick).
+riflemen, and a mission-aware adaptive one. The bracket: **do-nothing must lose
+every node, adaptive must win the sampled nodes, and the simulation must stay far
+inside the 16.6 ms frame budget** (measured 2–6 µs per tick). The sample covers
+every mission type, all five environments and all three terrain features, and the
+environment rules, the trench/searchlight damage stacking and the mine belts are
+asserted directly rather than inferred.
 
 ## Deployment
 
