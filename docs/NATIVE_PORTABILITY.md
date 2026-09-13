@@ -11,21 +11,25 @@ src/data/       pure historical data (campaign nodes, weapon stats).
                 NO DOM, NO window, NO localStorage, NO AudioContext.
 src/core/       pure data + pure functions.
                 NO DOM, NO window, NO localStorage, NO AudioContext.
+src/game/       pure simulation: fixed 1/60 s steps, seeded level layout,
+                entities, loadout maths. Headless-testable in Node
+                (`npm run check:sim`) — NO DOM, NO AudioContext.
                     ▲                    ▲
-src/engine/     subsystems behind interfaces: save file, audio synth,
-                asset loading, procedural sprites. Uses Canvas 2D / Web Audio
+src/engine/     subsystems behind interfaces: save file, audio synth, asset
+                loading, procedural sprites, input. Uses Canvas 2D / Web Audio
                 (both available in every WebView) but never DOM layout.
                     ▲
+src/render/     Canvas 2D drawing only: parallax, sprite compositing, HUD.
 src/platform/   the ONLY place that touches document / window / screen /
                 localStorage / ResizeObserver.
                     ▲
-src/app/        composition root (Boot.ts) — wires engine + platform together.
+src/app/        composition root (Boot.ts) + the run loop (Play.ts).
 src/main.ts     the only file that knows it is a browser page.
 ```
 
-`data/` and `core/` import only each other; `engine/` never imports from `app/`
-or `main.ts`. That is what makes the game logic testable in plain Node and
-portable verbatim.
+`data/`, `core/` and `game/` import only each other; `engine/` never imports
+from `app/` or `main.ts`. That is what makes the game logic testable in plain
+Node and portable verbatim.
 
 ## 2. The one thing a native build must swap: the storage backend
 

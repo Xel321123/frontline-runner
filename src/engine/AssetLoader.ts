@@ -150,15 +150,26 @@ export class AssetLoader {
     spec: AssetSpec,
   ): Promise<{ sprite: LoadedSprite; failure: AssetFailure | null }> {
     try {
-      const layers = await Promise.all(
-        spec.layers.map(async (layer): Promise<SpriteLayer> => {
+      const loaded = await Promise.all(
+        spec.layers.map(async (layer): Promise<SpriteLayer | null> => {
           const url = resolveAssetUrl(layer.url, this.baseUrl);
-          const image = await decodeImage(url, this.timeoutMs);
-          return { name: layer.name, image };
+          try {
+            const image = await decodeImage(url, this.timeoutMs);
+            return { name: layer.name, image };
+          } catch (error) {
+            if (layer.optional === true) {
+              // Decorative layer: keep the sprite, note it and carry on.
+              console.info(`[assets] optional layer "${layer.name}" skipped for ${spec.key}`, error);
+              return null;
+            }
+            throw error;
+          }
         }),
       );
+
+      const layers = loaded.filter((layer): layer is SpriteLayer => layer !== null);
       const base = layers[0];
-      if (!base) throw new Error('manifest entry has no layers');
+      if (!base) throw new Error('manifest entry has no loadable layers');
       const size = drawableSize(base.image);
       if (size.width === 0 || size.height === 0) {
         throw new Error(`decoded ${spec.layers[0]?.url ?? spec.key} with zero size`);

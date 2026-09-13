@@ -4,11 +4,40 @@ An offline-first, landscape **PWA** built with Vite + TypeScript + Canvas 2D,
 structured so it can be wrapped in **@capacitor/core** for iOS/Android later
 without restructuring.
 
-> **Status: step 2 — campaign and weapon database.** Step 1 delivered the
-> scaffold, PWA/offline setup, asset pipeline and engine subsystems; step 2 adds
-> the 60-node historical campaign and the 14-weapon stat database. **There is
-> still no gameplay loop** — the boot screen is a static systems/data check that
-> plots the campaign coordinates over the real theatre map.
+> **Status: step 3 — the runner engine is playable.** Step 1 delivered the PWA
+> scaffold, asset pipeline and engine subsystems; step 2 the historical campaign
+> and weapon database; step 3 the side-scrolling run itself (parallax, squad,
+> hazards, crates, math gates, end-zone bunker) with progression wired back into
+> the save file.
+
+## Play
+
+`npm run dev` (or the deployed Pages site), pick a faction, then **deploy**.
+
+| Control | Action |
+| --- | --- |
+| drag / pointer | the squad lerps to the pointer's Y (vertical only) |
+| `W`/`S`, `↑`/`↓` | keyboard equivalent |
+| `R` | redeploy a fresh run |
+| `ESC` | back to base |
+| `Enter` (at base) | deploy |
+
+- **Display:** fixed **1280×720** internal resolution, 16:9 locked, letterboxed
+  into any canvas size; manifest locks landscape for installed PWAs.
+- **Parallax:** sky, hills, ruins, treeline and ground scroll right-to-left at
+  different rates, all drawn procedurally per tile (nothing to download).
+- **Squad:** anchored at 18% from the left, auto-fires right, and carries the
+  best weapon its campaign progress has unlocked.
+- **Hazards:** mines −3 troops, razor wire −1 troop/second while inside the
+  field, enemy infantry 1:1 on contact. Shooting infantry kills them first.
+- **Crates & gates:** crates show a counter (+1, +3 …) that rises when shot;
+  passing one deploys that many paratroopers. Math gates (`+N`, `xN`, `-N`, `÷N`)
+  sit in stacked bands — your lane decides which one you pass, and shooting a
+  gate always improves it. A divider can reduce you but never wipes you.
+- **End zone:** scrolling stops, the bunker/strongpoint is engaged, and the
+  squad converges fire on it until it is destroyed or the timer runs out.
+- **Progression:** a win awards the node's war bonds, unlocks the next sector,
+  and the bonds buy upgrade tracks at base (firepower, armour, mobility, medkit).
 
 ## Quick start
 
@@ -16,11 +45,34 @@ without restructuring.
 npm install
 npm run dev          # http://localhost:5173/frontline-runner/
 npm run check:data   # validate the campaign/weapon database
+npm run check:sim    # headless balance, mechanics and performance checks
 npm run build        # typecheck + PWA build + 404 fallback
 npm run preview      # serve dist/ at http://localhost:4173/frontline-runner/
 npm run icons        # regenerate public/icons/*.png
 npm run build:native # relative-base build for Capacitor
 ```
+
+## Engine
+
+The run is a deterministic fixed-timestep simulation, so it can be tested
+without a browser:
+
+```
+src/engine/Input.ts      vertical pointer/drag control (+ keyboard), reports a
+                         target only — smoothing lives in the simulation
+src/game/                pure simulation: constants, seeded rng, level layout,
+                         entities, Simulation, loadout
+src/render/              Canvas 2D: parallax Background, UnitSprites (crops and
+                         composites the character parts), RunRenderer + HUD
+src/app/Play.ts          the run loop: rAF + 1/60 s fixed steps, input, audio
+                         policy, win/lose → save file
+```
+
+`npm run check:sim` runs the real `Simulation` in Node with three autopilots
+(superhuman, human-reaction, do-nothing) over live campaign nodes, asserts every
+documented mechanic one by one, and reports the cost per simulated tick
+(~20 µs against a 16.6 ms frame budget). It is how the balance numbers in
+`src/game/constants.ts` are set.
 
 ## Campaign & weapon database
 
@@ -133,7 +185,6 @@ to cache, nothing to license. The context is created on the first user gesture
 
 ## Next step
 
-Step 3: the gameplay loop (renderer, entities, input) consuming this scaffold —
-`AssetLoader.all()` for sprites, the campaign node's `tier` for enemy art,
-`GameStorage` for progression, `SoundManager` for feedback, and the weapon
-table for loadouts.
+Polish and content: more weapons/loadout choice, per-node art passes, boss
+variants (tank vs bunker), and a settings screen for volume and control
+sensitivity. The engine boundaries are in place so any of those is additive.

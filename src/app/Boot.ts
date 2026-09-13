@@ -10,10 +10,16 @@
  */
 
 import type { Faction, SaveData } from '../core/types';
-import { FACTION_INFO } from '../core/types';
-import { STAGES_PER_CAMPAIGN, campaignProgress } from '../core/progression';
+import { FACTION_INFO, isUpgradeId } from '../core/types';
+import {
+  STAGES_PER_CAMPAIGN,
+  UPGRADES,
+  campaignProgress,
+  upgradeCost,
+} from '../core/progression';
 import { ASSET_MANIFEST } from '../core/assets';
 import { CAMPAIGNS, CAMPAIGN_NODES, THEATERS, WEAPONS, weaponsForFaction } from '../data/campaignData';
+import { PlaySession } from './Play';
 import type { AssetLoadReport, LoadedSprite, SoundName } from '../engine';
 import { PALETTE, createAssetLoader, createGameStorage, SoundManager } from '../engine';
 import type { CanvasSurface, OrientationLockResult } from '../platform/Display';
@@ -56,12 +62,69 @@ export async function startApp(root: HTMLElement): Promise<void> {
   const hintEl = mustFind<HTMLElement>(root, '#hint');
   const missionEl = mustFind<HTMLElement>(root, '#mission');
   const armouryEl = mustFind<HTMLElement>(root, '#armoury');
+  const upgradesEl = mustFind<HTMLElement>(root, '#upgrades');
+  const deployEl = mustFind<HTMLButtonElement>(root, '#deploy');
 
   let report: AssetLoadReport | null = null;
   let orientationLock: OrientationLockResult | 'idle' = 'idle';
+  let session: PlaySession | null = null;
+  /** Console handle for diagnostics: `frontline.session.state` etc. */
+  const debugApi: Record<string, unknown> = {};
 
   const surface = createCanvasSurface(stageEl);
-  surface.onDraw = (s) => drawVerification(s, loader.all(), storage.snapshot());
+  const drawBase = (s: CanvasSurface): void => {
+    // The play scene leaves a letterboxed transform behind; restore the
+    // surface's device-pixel-ratio transform before drawing the base screen.
+    s.ctx.setTransform(s.pixelRatio, 0, 0, s.pixelRatio, 0, 0);
+    drawVerification(s, loader.all(), storage.snapshot());
+  };
+  surface.onDraw = drawBase;
+
+  // ------------------------------------------------------------ run control
+
+  function startRun(): void {
+    const save = storage.snapshot();
+    if (!save.faction || session) return;
+    const stage = campaignProgress(save.faction, save.unlockedStages).next;
+    if (!stage) {
+      hintEl.textContent = 'campaign complete — no further sector';
+      return;
+    }
+
+    void unlockAudio();
+    surface.onDraw = null;
+    document.body.classList.add('playing');
+    session = new PlaySession({
+      surface,
+      loader,
+      storage,
+      sound,
+      faction: save.faction,
+      // StageDefinition extends CampaignNode, so it carries the briefing,
+      // boss and coordinates the level generator needs.
+      node: stage,
+      stage,
+      onExit: () => endRun(),
+    });
+    session.start();
+    debugApi.session = session;
+    hintEl.textContent = 'drag or WASD to steer · R redeploy · ESC back to base';
+  }
+
+  function endRun(): void {
+    session?.dispose();
+    session = null;
+    debugApi.session = null;
+    document.body.classList.remove('playing');
+    surface.onDraw = drawBase;
+    renderFaction();
+    renderMission();
+    renderArmoury();
+    renderUpgrades();
+    renderStatus();
+    surface.requestRedraw();
+    hintEl.textContent = 'back at base';
+  }
 
   // ---------------------------------------------------------------- status
   function rows(): readonly StatusRow[] {
@@ -205,6 +268,26 @@ export async function startApp(root: HTMLElement): Promise<void> {
   }
 
   // ---------------------------------------------------------------- events
+  deployEl.addEventListener('click', () => {
+    void unlockAudio();
+    startRun();
+  });
+
+  upgradesEl.addEventListener('click', (event) => {
+    const target = (event.target as HTMLElement).closest<HTMLElement>('[data-upgrade]');
+    const id = target?.dataset.upgrade;
+    if (!id || !isUpgradeId(id)) return;
+    void unlockAudio();
+    const result = storage.purchaseUpgrade(id);
+    if (result.ok) {
+      sound.play('uiClick');
+      hintEl.textContent = `${id} → level ${result.level} (−${result.cost} bonds)`;
+    } else {
+      sound.play('uiBack');
+      hintEl.textContent = `upgrade blocked: ${result.reason}`;
+    }
+  });
+
   factionEl.addEventListener('click', (event) => {
     const target = (event.target as HTMLElement).closest<HTMLElement>('[data-faction]');
     const value = target?.dataset.faction;
@@ -264,7 +347,43 @@ export async function startApp(root: HTMLElement): Promise<void> {
     renderStatus();
     renderMission();
     renderArmoury();
+    renderUpgrades();
+    renderDeploy();
   });
+
+  /** Upgrade tracks, bought with war bonds earned in runs. */
+  function renderUpgrades(): void {
+    const save = storage.snapshot();
+    upgradesEl.innerHTML = UPGRADES.map((upgrade) => {
+      const level = save.upgrades[upgrade.id];
+      const cost = upgradeCost(upgrade.id, level);
+      const affordable = cost !== null && save.warBonds >= cost;
+      const value =
+        cost === null
+          ? '<span class="val">maxed</span>'
+          : `<span class="val${affordable ? ' ok' : ''}">${cost} bonds${
+              affordable
+                ? ` <button type="button" class="chip mini" data-upgrade="${upgrade.id}">buy</button>`
+                : ''
+            }</span>`;
+      return `<div class="row"><span class="key">${escapeHtml(
+        upgrade.name,
+      )} <span class="mono">L${level}/${upgrade.maxLevel}</span></span>${value}</div>`;
+    }).join('');
+  }
+
+  /** The deploy button reflects whether there is a sector left to fight. */
+  function renderDeploy(): void {
+    const save = storage.snapshot();
+    const progress = save.faction ? campaignProgress(save.faction, save.unlockedStages) : null;
+    const next = progress?.next;
+    deployEl.disabled = !next;
+    deployEl.textContent = next
+      ? `▶ deploy · ${next.name}`
+      : save.faction
+        ? 'campaign complete'
+        : 'choose a faction first';
+  }
 
   // A single window-level listener is enough to satisfy the browser's
   // "audio starts from a user gesture" rule.
@@ -276,18 +395,35 @@ export async function startApp(root: HTMLElement): Promise<void> {
     { once: true },
   );
 
+  // Enter deploys from the base screen (only when no run is active — the play
+  // session installs its own key handling while it owns the canvas).
+  window.addEventListener('keydown', (event) => {
+    if (session) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      startRun();
+    }
+  });
+
   // ---------------------------------------------------------------- boot
   renderFaction();
   renderStatus();
   renderMission();
   renderArmoury();
+  renderUpgrades();
+  renderDeploy();
 
   report = await loader.load();
   progressEl.textContent = `${report.loaded}/${report.total} assets`;
   renderStatus();
   surface.requestRedraw();
 
-  (globalThis as unknown as { frontline?: unknown }).frontline = { storage, sound, loader, surface };
+  (globalThis as unknown as { frontline?: unknown }).frontline = Object.assign(debugApi, {
+    storage,
+    sound,
+    loader,
+    surface,
+  });
 
   async function unlockAudio(): Promise<void> {
     if (sound.state === 'locked') await sound.unlock();
@@ -345,7 +481,7 @@ function drawVerification(
 
   ctx.fillStyle = PALETTE.warn;
   ctx.font = `700 ${bodySize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-  ctx.fillText('STEP 2 · DATABASE', tx, ty);
+  ctx.fillText('STEP 3 · RUNNER ENGINE', tx, ty);
   ty += bodySize * 1.7;
 
   const lines = [
@@ -355,7 +491,7 @@ function drawVerification(
     `coords plotted from campaignData.ts`,
     `ring = next mission · dim = locked`,
     `orange outline = procedural asset fallback`,
-    `gameplay loop: NOT STARTED`,
+    `press DEPLOY to play the next sector`,
   ];
   ctx.font = `${bodySize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
   for (const [index, line] of lines.entries()) {
@@ -523,10 +659,11 @@ const SHELL_HTML = `
     <header class="bar">
       <div>
         <h1>Frontline Runner</h1>
-        <p class="sub">Step 2 · historical campaign and weapon database (still no gameplay loop)</p>
+        <p class="sub">Step 3 · side-scrolling runner engine — deploy to fight the next sector</p>
       </div>
       <div class="bar-actions">
         <span id="progress" class="mono">assets 0/${ASSET_MANIFEST.length}</span>
+        <button id="deploy" type="button" class="chip primary">▶ deploy</button>
         <button id="mute" type="button" class="chip" aria-pressed="false">🔊 audio on</button>
         <button id="immersive" type="button" class="chip">⛶ landscape</button>
         <button id="reset" type="button" class="chip danger">reset save</button>
@@ -552,6 +689,12 @@ const SHELL_HTML = `
           <h2>Armoury</h2>
           <div id="armoury" class="rows"></div>
           <p class="fine">Unlock node comes from each weapon's <span class="mono">minLevel</span>.</p>
+        </section>
+
+        <section>
+          <h2>Upgrades</h2>
+          <div id="upgrades" class="rows"></div>
+          <p class="fine">War bonds are earned by clearing sectors.</p>
         </section>
 
         <section>

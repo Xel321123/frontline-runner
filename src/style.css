@@ -236,6 +236,44 @@ body {
   color: var(--danger);
 }
 
+.chip.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0f1409;
+  font-weight: 700;
+}
+
+.chip.primary:disabled {
+  background: var(--panel-2);
+  border-color: var(--line);
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.chip.mini {
+  padding: 2px 7px;
+  font-size: 11px;
+  vertical-align: middle;
+}
+
+/* While a run is live the canvas gets the whole area: this is a landscape game. */
+body.playing .panel {
+  display: none;
+}
+
+body.playing .layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.playing .stage-wrap {
+  border-color: #2f3a30;
+}
+
+/* Steering by drag must not scroll or zoom the page. */
+.stage {
+  touch-action: none;
+}
+
 .fine {
   margin: 8px 0 0;
   color: var(--muted);

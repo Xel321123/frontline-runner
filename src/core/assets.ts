@@ -30,6 +30,11 @@ export interface AssetLayerSpec {
   readonly name: string;
   /** Path relative to `import.meta.env.BASE_URL`. */
   readonly url: string;
+  /**
+   * Optional layers may fail without downgrading the whole sprite to its
+   * procedural fallback (used for per-tier weapon art, which is decorative).
+   */
+  readonly optional?: boolean;
 }
 
 export interface AssetSpec {
@@ -51,6 +56,8 @@ interface UnitTierSpec {
   readonly body: string;
   readonly head: string;
   readonly helmet: string;
+  /** Held weapon art — decorative, so it loads as an optional layer. */
+  readonly weapon: string;
 }
 
 const ALLIED_TIERS: readonly UnitTierSpec[] = [
@@ -61,6 +68,7 @@ const ALLIED_TIERS: readonly UnitTierSpec[] = [
     body: 'ally_body.png',
     head: 'ally_head.png',
     helmet: 'ally_hat_t1.png',
+    weapon: 'colt_45_ally_t1.png',
   },
 ];
 
@@ -72,6 +80,7 @@ const ENEMY_TIERS: readonly UnitTierSpec[] = [
     body: 'enemy_body_t1.png',
     head: 'enemy_head_t1.png',
     helmet: 'helmet_t1.png',
+    weapon: 'mp40_t1.png',
   },
   {
     tier: 2,
@@ -80,6 +89,7 @@ const ENEMY_TIERS: readonly UnitTierSpec[] = [
     body: 'enemy_body_t2.png',
     head: 'enemy_head_t2.png',
     helmet: 'helmet_3_t2.png',
+    weapon: 'luger_t2.png',
   },
   {
     tier: 3,
@@ -88,6 +98,7 @@ const ENEMY_TIERS: readonly UnitTierSpec[] = [
     body: 'enemy_body_t3.png',
     head: 'enemy_head_t3.png',
     helmet: 'helmet_2_t3.png',
+    weapon: 'G43_t3.png',
   },
   {
     tier: 4,
@@ -96,6 +107,7 @@ const ENEMY_TIERS: readonly UnitTierSpec[] = [
     body: 'enemy_body_t4.png',
     head: 'enemy_head_t4.png',
     helmet: 'helmet_4_t4.png',
+    weapon: 'G43_t4.png',
   },
   {
     tier: 5,
@@ -104,6 +116,7 @@ const ENEMY_TIERS: readonly UnitTierSpec[] = [
     body: 'enemy_body_t5.png',
     head: 'enemy_head_t5.png',
     helmet: 'helmet_t5.png',
+    weapon: 'mp40_t5.png',
   },
   {
     tier: 6,
@@ -112,6 +125,7 @@ const ENEMY_TIERS: readonly UnitTierSpec[] = [
     body: 'enemy_body_t6.png',
     head: 'enemy_head_t6.png',
     helmet: 'helmet_t6.png',
+    weapon: 'luger_t6.png',
   },
   {
     tier: 8,
@@ -120,6 +134,7 @@ const ENEMY_TIERS: readonly UnitTierSpec[] = [
     body: 'enemy_body_t8.png',
     head: 'enemy_head_t8.png',
     helmet: 'helmet_t8.png',
+    weapon: 'mp40_t8.png',
   },
   {
     tier: 9,
@@ -128,6 +143,7 @@ const ENEMY_TIERS: readonly UnitTierSpec[] = [
     body: 'enemy_body_t9.png',
     head: 'enemy_head_t9.png',
     helmet: 'helmet_t9.png',
+    weapon: 'luger_t9.png',
   },
 ];
 
@@ -142,6 +158,9 @@ function unitSpec(faction: Faction, tier: UnitTierSpec): AssetSpec {
       { name: 'body', url: `${dir}/${tier.body}` },
       { name: 'head', url: `${dir}/${tier.head}` },
       { name: 'helmet', url: `${dir}/${tier.helmet}` },
+      // Held weapon: optional, so a missing file degrades to an unarmed sprite
+      // instead of dropping the whole unit to its procedural fallback.
+      { name: 'weapon', url: `${dir}/${tier.weapon}`, optional: true },
     ],
     procedural: faction === 'allied' ? 'unit.allied' : 'unit.enemy',
     proceduralSize: UNIT_SIZE,

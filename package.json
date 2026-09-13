@@ -11,6 +11,7 @@
     "dev": "vite",
     "typecheck": "tsc",
     "check:data": "node scripts/check-campaign-data.mjs",
+    "check:sim": "node scripts/simulate-run.mjs",
     "build": "tsc && vite build && node scripts/copy-404.mjs",
     "build:native": "VITE_BASE=./ npm run build",
     "preview": "vite preview --port 4173",
