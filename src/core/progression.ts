@@ -244,13 +244,11 @@ export interface UpgradeDefinition {
   readonly costStep: number;
   /** Effect per level, so the camp screen and the battle agree. */
   readonly perLevel: {
-    /** Extra supplies banked when a battle opens. */
-    readonly supplies?: number;
-    /** Multiplicative bonus to unit damage. */
+    /** Multiplicative bonus to unit hit points. */
+    readonly unitHp?: number;
+    /** Multiplicative bonus to damage. */
     readonly damage?: number;
-    /** Multiplicative bonus to unit rate of fire. */
-    readonly fireRate?: number;
-    /** Extra hit points on the player's base. */
+    /** Flat hit points added to the player's strongpoint. */
     readonly baseHp?: number;
   };
 }
@@ -258,10 +256,9 @@ export interface UpgradeDefinition {
 /** Supplies banked at the start of a battle, before any Starting Supplies levels. */
 export const BASE_START_SUPPLIES = 60;
 /** Effects of one level on each track. */
-export const SUPPLIES_PER_ARMOUR_LEVEL = 30;
-export const DAMAGE_PER_FIREPOWER_LEVEL = 0.15;
-export const FIRE_RATE_PER_MOBILITY_LEVEL = 0.06;
-export const BASE_HP_PER_MEDKIT_LEVEL = 250;
+export const UNIT_HP_PER_HEALTH_LEVEL = 0.08;
+export const DAMAGE_BONUS_PER_LEVEL = 0.18;
+export const BASE_HP_PER_FORTIFICATION_LEVEL = 250;
 
 /**
  * Upgrade tracks sold at camp. The ids are persisted, so they are stable;
@@ -270,40 +267,31 @@ export const BASE_HP_PER_MEDKIT_LEVEL = 250;
  */
 export const UPGRADES: readonly UpgradeDefinition[] = [
   {
-    id: 'armour',
-    name: 'Starting Supplies',
-    description: 'Open each battle with a fuller depot.',
-    maxLevel: 5,
-    baseCost: 140,
-    costStep: 100,
-    perLevel: { supplies: SUPPLIES_PER_ARMOUR_LEVEL },
-  },
-  {
-    id: 'firepower',
-    name: 'Damage',
-    description: 'Every round hits harder.',
-    maxLevel: 5,
-    baseCost: 120,
-    costStep: 90,
-    perLevel: { damage: DAMAGE_PER_FIREPOWER_LEVEL },
-  },
-  {
-    id: 'mobility',
-    name: 'Fire Rate',
-    description: 'Faster reloads and rate of fire.',
+    id: 'health',
+    name: 'Unit Health',
+    description: 'Reinforced kit: every unit you field starts with more hit points.',
     maxLevel: 5,
     baseCost: 110,
-    costStep: 80,
-    perLevel: { fireRate: FIRE_RATE_PER_MOBILITY_LEVEL },
+    costStep: 90,
+    perLevel: { unitHp: UNIT_HP_PER_HEALTH_LEVEL },
   },
   {
-    id: 'medkit',
-    name: 'Fortifications',
-    description: 'Thicker walls on your own base.',
-    maxLevel: 3,
-    baseCost: 200,
-    costStep: 150,
-    perLevel: { baseHp: BASE_HP_PER_MEDKIT_LEVEL },
+    id: 'damage',
+    name: 'Attack Damage',
+    description: 'Better ammunition and drills: every unit in the line hits harder.',
+    maxLevel: 5,
+    baseCost: 110,
+    costStep: 90,
+    perLevel: { damage: DAMAGE_BONUS_PER_LEVEL },
+  },
+  {
+    id: 'baseHp',
+    name: 'Base Fortification',
+    description: 'Deeper shelters and thicker revetments for your own strongpoint.',
+    maxLevel: 5,
+    baseCost: 110,
+    costStep: 90,
+    perLevel: { baseHp: BASE_HP_PER_FORTIFICATION_LEVEL },
   },
 ];
 
@@ -317,12 +305,11 @@ export function upgradeEffectLabel(id: UpgradeId, level: number): string {
   const upgrade = UPGRADE_BY_ID.get(id);
   if (!upgrade) return '';
   const parts: string[] = [];
-  const { supplies = 0, damage = 0, fireRate = 0, baseHp = 0 } = upgrade.perLevel;
-  if (supplies > 0) parts.push(`+${supplies * level} supplies at deploy`);
-  if (damage > 0) parts.push(`+${Math.round(damage * level * 100)}% unit damage`);
-  if (fireRate > 0) parts.push(`+${Math.round(fireRate * level * 100)}% rate of fire`);
-  if (baseHp > 0) parts.push(`+${baseHp * level} base hit points`);
-  return level > 0 ? parts.join(' · ') : 'not upgraded';
+  const { unitHp = 0, damage = 0, baseHp = 0 } = upgrade.perLevel;
+  if (unitHp > 0) parts.push(`+${Math.round(unitHp * level * 100)}% unit HP`);
+  if (damage > 0) parts.push(`+${Math.round(damage * level * 100)}% damage`);
+  if (baseHp > 0) parts.push(`+${baseHp * level} base HP`);
+  return parts.length > 0 ? parts.join(', ') : 'not upgraded';
 }
 
 export function getUpgrade(id: UpgradeId): UpgradeDefinition | undefined {

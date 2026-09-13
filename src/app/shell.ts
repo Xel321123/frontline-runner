@@ -139,7 +139,7 @@ export async function startShell(root: HTMLElement): Promise<void> {
       supplyRate: effectiveSupplyRate(objective),
       baseHp: config.playerBaseHp,
       damageMultiplier: config.damageMultiplier,
-      fireRateMultiplier: config.fireRateMultiplier,
+      unitHpMultiplier: config.unitHpMultiplier,
     };
   }
 

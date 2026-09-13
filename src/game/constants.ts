@@ -66,6 +66,12 @@ export const MAX_UNITS_PER_SIDE = 24;
  * a battle ends.
  */
 export const MATCH_TIME_LIMIT = 165;
+/**
+ * In a `survive_timer` battle the player is the defender, so their units advance
+ * to this line and stop: "hold the line" should mean holding, dug in behind
+ * their own obstacles, rather than marching out across their own minefield.
+ */
+export const HOLD_LINE_X = 660;
 /** How long a `survive_timer` sector must be held. */
 export const SURVIVE_SECONDS = 120;
 /** An `assault` faces a prepared position: stronger, but the attacker is ready. */
@@ -82,7 +88,7 @@ export const SURVIVE_ENEMY_DEPLOY_INTERVAL = 1.7;
  * The defender in a survival battle is dug in with its dumps alongside it, so
  * it generates supplies faster than a force on the move.
  */
-export const SURVIVE_DEFENDER_SUPPLY_BONUS = 1.5;
+export const SURVIVE_DEFENDER_SUPPLY_BONUS = 2.1;
 /**
  * An `assault` has to cross ground that favours the defender — trenches, mines,
  * reduced visibility — so the attacker is given the supply throughput to keep
@@ -90,7 +96,6 @@ export const SURVIVE_DEFENDER_SUPPLY_BONUS = 1.5;
  */
 export const ASSAULT_ATTACKER_SUPPLY_BONUS = 1.25;
 /** Minimum gap between the player's own deployments (stops click spamming). */
-export const PLAYER_DEPLOY_COOLDOWN = 0.35;
 /** Enemy hit points grow with the campaign tier. */
 export const ENEMY_HP_PER_TIER_SCALE = 0.06;
 

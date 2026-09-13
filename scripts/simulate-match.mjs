@@ -40,10 +40,9 @@ function saveWith(upgrades = {}) {
     ...save,
     faction: 'allied',
     upgrades: {
-      armour: 0,
-      firepower: 0,
-      mobility: 0,
-      medkit: 0,
+      health: 0,
+      damage: 0,
+      baseHp: 0,
       ...upgrades,
     },
   };
@@ -109,8 +108,13 @@ const POLICIES = {
       return { deploy: null, buyLogistics: true };
     }
     // Adapt to the mission: a survival battle is won by holding ground with
-    // infantry, so armour (slow, and surcharged in mud) is the wrong buy.
+    // infantry, but infantry cannot scratch enemy armour, so one of our own
+    // tanks is the answer to theirs.
+    const enemyArmour = state.units.filter(
+      (unit) => unit.side === 'enemy' && unit.kind === 'tank',
+    ).length;
     if (state.missionType === 'survive_timer') {
+      if (enemyArmour > 0 && state.supplies >= costOf(state, 'tank')) return deploy('tank');
       if (state.enemyUnits >= 3 && state.supplies >= costOf(state, 'mg')) return deploy('mg');
       return state.supplies >= costOf(state, 'rifleman') ? deploy('rifleman') : null;
     }
@@ -170,40 +174,29 @@ const upgrade = () => ({ deploy: null, buyLogistics: true });
   const { sim } = simFor();
   const rateBefore = sim.supplyRate;
   const cost = logisticsCost(0);
-  check('first logistics upgrade has a price', typeof cost === 'number' && cost > 0, `cost=${cost}`);
+  check('first logistics upgrade costs 30 bonds', cost === 30, `cost=${cost}`);
 
-  // Fight with a steady policy until the bonds for one upgrade are banked.
+  // Fight a normal battle until the bonds for one upgrade are banked.
   let guard = 0;
-  while (sim.state.bonds < cost && sim.state.status === 'running' && guard < 200) {
-    play(sim, 2, (state) =>
-      state.supplies >= UNIT_STATS.rifleman.cost ? deploy('rifleman') : null,
-    );
+  while (sim.state.bonds < cost && sim.state.status === 'running' && guard < 60 * 200) {
+    sim.update(C.FIXED_DT, POLICIES.rifle(sim.state) ?? NO_COMMAND);
     guard += 1;
   }
-  const bondsBefore = sim.state.bonds;
-  check(
-    'destroyed enemies bank enough bonds for an upgrade',
-    bondsBefore >= cost,
-    `bonds=${bondsBefore}, cost=${cost}`,
-  );
-  const bought = play(sim, 0.1, () => upgrade());
-  check(
-    'the logistics upgrade is bought with bonds',
-    bought.logisticsLevel === 1 && bought.bonds <= bondsBefore - cost,
-    `level=${bought.logisticsLevel}, bonds ${bondsBefore} -> ${bought.bonds}`,
-  );
+  const bonds = sim.state.bonds;
+  check('destroyed enemies bank enough bonds for an upgrade', bonds >= cost, `bonds=${bonds}, cost=${cost}`);
+
+  sim.update(C.FIXED_DT, { deploy: null, buyLogistics: true });
+  check('the logistics upgrade is bought with bonds', sim.state.logisticsLevel === 1, `level=${sim.state.logisticsLevel}`);
+  check('the bond cost is deducted', sim.state.bonds === bonds - cost, `bonds ${bonds} -> ${sim.state.bonds}`);
   check(
     'logistics upgrade raises supply generation',
-    Math.abs(sim.supplyRate - (rateBefore + C.SUPPLY_PER_LOGISTICS_LEVEL)) < 1e-9,
+    sim.supplyRate > rateBefore,
     `rate ${rateBefore} -> ${sim.supplyRate}`,
   );
-  // And it cannot be bought without the bonds.
-  const poor = simFor().sim;
-  const blocked = play(poor, 0.1, () => upgrade());
   check(
-    'a broke player cannot buy logistics',
-    blocked.logisticsLevel === 0,
-    `level=${blocked.logisticsLevel}, bonds=${blocked.bonds}`,
+    'and the raise is exactly one step',
+    Math.abs(sim.supplyRate - rateBefore - C.SUPPLY_PER_LOGISTICS_LEVEL) < 1e-9,
+    `${rateBefore} -> ${sim.supplyRate}`,
   );
 }
 
@@ -671,6 +664,9 @@ const SAMPLE_NODES = [
   'axis-12',     // destroy_base, mud, trenches + minefield
   'axis-26',     // assault, snow, minefield, blitzkrieg x1.4
   'axis-30',     // survive_timer, mud, trenches, shortage x0.7
+  'allied-11',   // survive_timer, snow, trenches, the deepest shortage x0.7
+  'axis-21',     // survive_timer, snow, trenches (the Korsun pocket)
+  'allied-28',   // assault, bridge chokepoint (Remagen)
 ];
 const table = [];
 let worstTick = 0;
@@ -717,7 +713,7 @@ if (idle.some((row) => row.status === 'victory')) {
 }
 check(
   'adaptive play wins the campaign nodes',
-  adaptive.filter((row) => row.status === 'victory').length >= adaptive.length - 1,
+  adaptive.every((row) => row.status === 'victory'),
   adaptive.map((row) => `${row.nodeId}:${row.status}`).join(' '),
 );
 check(

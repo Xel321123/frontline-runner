@@ -1,3 +1,17 @@
+/** Which weapon signature a firing unit should sound like. */
+function shotSoundFor(kind: SimEvent['kind']): SoundName {
+  switch (kind) {
+    case 'rifleman':
+      return 'rifleShot';
+    case 'smg':
+      return 'smgShot';
+    case 'tank':
+      return 'shellFire';
+    default:
+      return 'mgShot';
+  }
+}
+
 /**
  * MatchSession — the battle's composition root.
  *
@@ -234,47 +248,60 @@ export class MatchSession {
     this.options.sound.play(name, { volume });
   }
 
+  /**
+   * Sim events → the soundboard. Each weapon keeps its own signature, so the
+   * player can hear the difference between a rifle line and an MG nest without
+   * looking at the field. Volume and throttling live here; the synth itself
+   * owns the per-sound voice budget.
+   */
   private handleEvents(events: readonly SimEvent[]): void {
     for (const event of events) {
       switch (event.type) {
         case 'deploy':
-          this.play('uiClick', 60, 0.5);
+          this.play('deploy', 0, 0.5);
           break;
         case 'enemyDeploy':
-          this.play('uiBack', 400, 0.25);
+          this.play('uiBack', 400, 0.18);
           break;
         case 'shot':
-          this.play('shot', 40, 0.32);
+          this.play(shotSoundFor(event.kind), 0, 0.3);
           break;
         case 'shell':
-          this.play('hit', 120, 0.5);
+          this.play('shellFire', 0, 0.55);
           break;
         case 'impact':
-          this.play('hit', 90, 0.22);
+          // A round ringing off armour is a ricochet; dirt is a dull tick.
+          this.play(event.metal ? 'ricochet' : 'impact', 0, event.metal ? 0.3 : 0.2);
           break;
         case 'explosion':
-          this.play('explosion', 140, 0.6);
+          this.play('explosion', 0, 0.6);
+          break;
+        case 'mineBlast':
+          this.play('mineBlast', 0, 0.7);
           break;
         case 'unitDown':
-          this.play('hit', 110, 0.42);
+          this.play('impact', 60, 0.4);
           break;
         case 'playerUnitDown':
-          this.play('uiBack', 320, 0.3);
+          this.play('uiBack', 320, 0.28);
+          break;
+        case 'trenchOverrun':
+          this.play('uiBack', 200, 0.3);
           break;
         case 'baseHit':
-          this.play('hit', 150, 0.34);
+          this.play('impact', 120, 0.36);
           break;
         case 'baseDestroyed':
-          this.play('explosion', 100, 0.8);
+          this.play('explosion', 0, 0.85);
           break;
         case 'logisticsUpgrade':
-          this.play('uiClick', 80, 0.6);
+          this.play('upgrade', 0, 0.6);
           break;
         case 'victory':
-          this.play('explosion', 100, 0.75);
+          this.play('explosion', 0, 0.75);
           break;
         case 'defeat':
-          this.play('uiBack', 100, 0.5);
+          this.play('uiBack', 0, 0.5);
           break;
       }
     }

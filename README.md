@@ -35,6 +35,38 @@ restructuring.
   base loses it. A 3-minute clock decides stalemates on remaining base health,
   and a draw counts as a defeat — the attacker has to actually take ground.
 
+## Audio
+
+Every sound is synthesised at runtime with the Web Audio API from oscillators,
+filtered noise bursts and envelopes — no audio files, nothing to download, and
+nothing that can fail to cache. Each weapon keeps a distinct signature, because
+in a battle where you are watching six things at once the mix is often the only
+tell for what is actually on the line:
+
+| Sound | Design |
+| --- | --- |
+| **Rifle** | hard broadband crack, thin dry tail, almost no body |
+| **SMG** | brighter, drier, very short — rapid fire reads as a burp |
+| **MG** | heavier thud with real low-end push and a longer tail |
+| **Tank shell** | cannon blast with a breech clank right behind it |
+| **Ricochet** | metallic ping that falls away with a buzz, on rounds that ring off armour |
+| **Explosion** | long low rumble with a debris crackle on top; mine blasts are dirtier and lower |
+
+A compressor on the master bus keeps stacked explosions from clipping a phone
+speaker, and every sound has its own throttle and voice budget so six machine
+guns firing at once cannot turn into one clipped rasp. The header toggle
+(**sound off / sound on**) is persistent: it writes `settings.muted` into the
+save file, so a muted player stays muted across reloads and offline sessions.
+
+## HUD
+
+The battle HUD carries the four things a player has to watch: a **supply
+counter** with its live rate, the **logistics level** (pips plus the next cost),
+**deployment cooldown timers** on each slot (a descending veil with the seconds
+left, per unit type — 0.3 s for a rifleman up to 2.5 s for a tank) and **base
+health bars** for both sides, with a red pulse at the screen edge whenever your
+own strongpoint is taking hits.
+
 ## Tactical environments
 
 Every one of the 60 campaign nodes is authored with its own tactical shape —
@@ -73,7 +105,7 @@ report the real in-battle figure rather than the base one.
 | **Title** | Faction selection (Allies / Axis) with per-campaign totals, sound toggle, collapsible diagnostics |
 | **Campaign map** | The Europe SVG with all 30 node coordinates plotted: **grey** locked, **gold** next objective, **green** cleared, **red** contested, each labelled with its weather glyph, plus a key for what each environment does. Clicking a node opens its briefing |
 | **Briefing modal** | Authentic two-sentence history, theatre, grid reference, mission type, weather and its modifier, terrain features, the sector's real supply rate, difficulty tier, reward and the node's own record, with a Deploy button |
-| **Camp / Armoury modal** | Supplies at deploy, base hit points, damage and rate-of-fire multipliers, the full unit roster with live stats, and the upgrade tracks bought with war bonds |
+| **Camp / Armoury modal** | War bonds buy three permanent tracks — **unit health**, **attack damage**, **base fortification** — alongside the resulting loadout figures (supplies at deploy, base hit points, damage and unit HP multipliers) and the full unit roster with live stats |
 | **Result modal** | Bonds awarded and collected, units deployed and lost, enemy destroyed, logistics bought, and both structures' remaining strength |
 | **Battle** | The tug of war itself, letterboxed into the available space |
 
@@ -157,9 +189,17 @@ npm install
 npm run dev          # http://localhost:5173/frontline-runner/
 npm run check:data   # validate the campaign/weapon database
 npm run check:sim    # headless battle mechanics, autopilot brackets, µs/tick
+npm run check:save    # all 60 stages: reachable, clearable, losable, persisted
 npm run typecheck    # tsc --noEmit, strict
 npm run build        # typecheck + PWA build + 404 fallback
 ```
+
+`npm run check:save` walks **every one of the sixty nodes** through the real
+storage layer: each must be reachable in order, clearable (bonds banked, next
+node unlocked, record written), losable (recorded, nothing unlocked, no bonds),
+and must survive a write → read round trip through the same normalisation path
+`localStorage` uses — including legacy four-track saves from the previous
+armory, which migrate onto the current three (815 assertions).
 
 `npm run check:sim` runs the real `TugSimulation` in Node through
 `scripts/simulate-match.mjs`: it asserts every documented mechanic (the supply

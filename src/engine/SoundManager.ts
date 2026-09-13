@@ -1,9 +1,20 @@
 /**
  * SoundManager — procedural Web Audio synth.
  *
- * Every sound is generated at runtime from oscillators and a shared noise
- * buffer: no audio files, no network, and nothing to cache, which is exactly
- * what an offline-first PWA (and a native Capacitor WebView) wants.
+ * Every sound is generated at runtime from oscillators, filtered noise bursts
+ * and envelopes: no audio files, no network, nothing to cache — which is what
+ * an offline-first PWA (and a native Capacitor WebView) wants.
+ *
+ * Each weapon has its own signature rather than a pitch-shifted copy of one
+ * gunshot, because the mix is the only feedback the player gets that the right
+ * units are on the line:
+ *
+ *   rifleShot  sharp transient crack, thin tail        (bolt-action)
+ *   smgShot    lighter, brighter, very short           (burp gun)
+ *   mgShot     heavier thud with a longer, lower body  (sustained fire)
+ *   shellFire  cannon blast + breech clank             (tank main gun)
+ *   ricochet   metallic ping with a falling pitch      (bullet on armour)
+ *   explosion  long low rumble with debris crackle     (shell / mine blast)
  *
  * Browser reality: an AudioContext may only *start* from a user gesture, so
  * `unlock()` must be called from a real click/keypress handler. Until then
@@ -12,19 +23,25 @@
  */
 
 export type SoundName =
-  | 'shot'
-  | 'hit'
+  | 'rifleShot'
+  | 'smgShot'
+  | 'mgShot'
+  | 'shellFire'
+  | 'ricochet'
+  | 'impact'
   | 'explosion'
+  | 'mineBlast'
+  | 'deploy'
+  | 'upgrade'
   | 'uiClick'
-  | 'uiBack'
-  | 'reload';
+  | 'uiBack';
 
 export type SoundManagerState = 'unsupported' | 'locked' | 'running' | 'suspended';
 
 export interface PlayOptions {
   /** Per-call gain multiplier (0–1). */
   readonly volume?: number;
-  /** Pitch multiplier, e.g. 1.2 for a snappier pistol. */
+  /** Pitch multiplier, e.g. 1.2 for a snappier shot. */
   readonly rate?: number;
 }
 
@@ -35,11 +52,35 @@ export interface SoundManagerOptions {
   readonly onMutedChange?: (muted: boolean) => void;
 }
 
-/** Simultaneous voices before new requests are dropped. */
-const MAX_VOICES = 12;
-/** Minimum gap between two plays of the *same* sound (anti-machine-gun buzz). */
-const MIN_REPEAT_MS = 25;
-const NOISE_SECONDS = 1;
+interface VoiceBudget {
+  /** Minimum gap between two plays of this sound, ms. */
+  readonly throttleMs: number;
+  /** How long a voice of this sound occupies the mixer, ms. */
+  readonly lifeMs: number;
+  /** Simultaneous voices of this sound. */
+  readonly maxVoices: number;
+}
+
+/**
+ * Mixing budget per sound. Battlefields are loud places: without these, six
+ * machine guns firing at once turn into a single clipped rasp.
+ */
+const BUDGET: Record<SoundName, VoiceBudget> = {
+  rifleShot: { throttleMs: 70, lifeMs: 260, maxVoices: 4 },
+  smgShot: { throttleMs: 45, lifeMs: 180, maxVoices: 5 },
+  mgShot: { throttleMs: 55, lifeMs: 300, maxVoices: 3 },
+  shellFire: { throttleMs: 120, lifeMs: 900, maxVoices: 3 },
+  ricochet: { throttleMs: 60, lifeMs: 300, maxVoices: 4 },
+  impact: { throttleMs: 50, lifeMs: 200, maxVoices: 5 },
+  explosion: { throttleMs: 90, lifeMs: 1500, maxVoices: 3 },
+  mineBlast: { throttleMs: 120, lifeMs: 1400, maxVoices: 2 },
+  deploy: { throttleMs: 140, lifeMs: 500, maxVoices: 2 },
+  upgrade: { throttleMs: 120, lifeMs: 500, maxVoices: 2 },
+  uiClick: { throttleMs: 40, lifeMs: 120, maxVoices: 2 },
+  uiBack: { throttleMs: 40, lifeMs: 220, maxVoices: 2 },
+};
+
+const NOISE_SECONDS = 2;
 
 type AudioContextConstructor = new (options?: AudioContextOptions) => AudioContext;
 
@@ -51,13 +92,34 @@ function resolveAudioContext(): AudioContextConstructor | null {
   return scope.AudioContext ?? scope.webkitAudioContext ?? null;
 }
 
+/** Filtered noise burst — the raw material of cracks, thuds and rumbles. */
+interface NoiseSpec {
+  readonly type: BiquadFilterType;
+  readonly from: number;
+  readonly to: number;
+  readonly q: number;
+  readonly gain: number;
+  readonly attack: number;
+  readonly decay: number;
+}
+
+/** Pitched body — the "boom" underneath a blast. */
+interface ToneSpec {
+  readonly type: OscillatorType;
+  readonly from: number;
+  readonly to: number;
+  readonly gain: number;
+  readonly attack: number;
+  readonly decay: number;
+}
+
 export class SoundManager {
   private ctor: AudioContextConstructor | null;
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private noise: AudioBuffer | null = null;
   private readonly lastPlayedAt = new Map<SoundName, number>();
-  private activeVoices = 0;
+  private readonly activeVoices = new Map<SoundName, number>();
 
   private mutedFlag: boolean;
   private volumeLevel: number;
@@ -136,33 +198,14 @@ export class SoundManager {
   play(name: SoundName, options: PlayOptions = {}): void {
     const ctx = this.ctx;
     if (!ctx || this.mutedFlag || ctx.state !== 'running') return;
-    if (!this.reserveVoice(name)) return;
 
     const gain = clamp01(options.volume ?? 1);
     if (gain <= 0) return;
+    if (!this.reserveVoice(name)) return;
     const rate = clamp(options.rate ?? 1, 0.5, 2);
 
     try {
-      switch (name) {
-        case 'shot':
-          this.synthShot(ctx, gain, rate);
-          break;
-        case 'hit':
-          this.synthHit(ctx, gain, rate);
-          break;
-        case 'explosion':
-          this.synthExplosion(ctx, gain, rate);
-          break;
-        case 'uiClick':
-          this.synthClick(ctx, gain);
-          break;
-        case 'uiBack':
-          this.synthBack(ctx, gain);
-          break;
-        case 'reload':
-          this.synthReload(ctx, gain, rate);
-          break;
-      }
+      this.render(ctx, name, gain, rate);
     } catch {
       /* A failed voice must never break the frame loop. */
     }
@@ -182,7 +225,7 @@ export class SoundManager {
     const ctx = this.ctx;
     if (!ctx) return;
     const master = ctx.createGain();
-    // A compressor keeps stacked explosions from clipping the phone speaker.
+    // A compressor keeps stacked explosions from clipping a phone speaker.
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -12;
     limiter.knee.value = 12;
@@ -202,204 +245,230 @@ export class SoundManager {
     this.master.gain.setTargetAtTime(target, this.ctx.currentTime, 0.01);
   }
 
+  /** Throttle, then claim one of this sound's voices. */
   private reserveVoice(name: SoundName): boolean {
+    const budget = BUDGET[name];
     const now = performance.now();
     const previous = this.lastPlayedAt.get(name) ?? -Infinity;
-    if (now - previous < MIN_REPEAT_MS) return false;
-    if (this.activeVoices >= MAX_VOICES) return false;
+    if (now - previous < budget.throttleMs) return false;
+    if ((this.activeVoices.get(name) ?? 0) >= budget.maxVoices) return false;
     this.lastPlayedAt.set(name, now);
-    this.activeVoices += 1;
+    this.activeVoices.set(name, (this.activeVoices.get(name) ?? 0) + 1);
     globalThis.setTimeout(() => {
-      this.activeVoices = Math.max(0, this.activeVoices - 1);
-    }, 1200);
+      const held = this.activeVoices.get(name) ?? 1;
+      this.activeVoices.set(name, Math.max(0, held - 1));
+    }, budget.lifeMs);
     return true;
-  }
-
-  // -------------------------------------------------------------- synthesis
-
-  /** Looping white-noise source — the basis of every impact sound. */
-  private noiseSource(ctx: AudioContext): AudioBufferSourceNode | null {
-    if (!this.noise) return null;
-    const source = ctx.createBufferSource();
-    source.buffer = this.noise;
-    source.loop = true;
-    return source;
   }
 
   private dest(): AudioNode | null {
     return this.master;
   }
 
-  /** Rifle-crack: broadband noise snap + descending 160→48 Hz body thump. */
-  private synthShot(ctx: AudioContext, volume: number, rate: number): void {
-    const out = this.dest();
-    if (!out) return;
-    const t = ctx.currentTime;
-    const noise = this.noiseSource(ctx);
-    if (noise) {
-      const band = ctx.createBiquadFilter();
-      band.type = 'bandpass';
-      band.Q.value = 0.8;
-      band.frequency.setValueAtTime(1800 * rate, t);
-      band.frequency.exponentialRampToValueAtTime(280, t + 0.13);
-      const env = ctx.createGain();
-      env.gain.setValueAtTime(0.0001, t);
-      env.gain.exponentialRampToValueAtTime(0.85 * volume, t + 0.004);
-      env.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
-      noise.connect(band);
-      band.connect(env);
-      env.connect(out);
-      noise.start(t);
-      noise.stop(t + 0.2);
-    }
-    const thump = ctx.createOscillator();
-    thump.type = 'triangle';
-    thump.frequency.setValueAtTime(160 * rate, t);
-    thump.frequency.exponentialRampToValueAtTime(48, t + 0.14);
-    const thumpEnv = ctx.createGain();
-    thumpEnv.gain.setValueAtTime(0.0001, t);
-    thumpEnv.gain.exponentialRampToValueAtTime(0.5 * volume, t + 0.005);
-    thumpEnv.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
-    thump.connect(thumpEnv);
-    thumpEnv.connect(out);
-    thump.start(t);
-    thump.stop(t + 0.2);
-  }
+  // ------------------------------------------------------------- primitives
 
-  /** Bullet impact: tight mid-band noise tick, very short. */
-  private synthHit(ctx: AudioContext, volume: number, rate: number): void {
-    const out = this.dest();
-    if (!out) return;
-    const t = ctx.currentTime;
-    const noise = this.noiseSource(ctx);
-    if (!noise) return;
-    const band = ctx.createBiquadFilter();
-    band.type = 'bandpass';
-    band.Q.value = 2.2;
-    band.frequency.setValueAtTime(900 * rate, t);
-    band.frequency.exponentialRampToValueAtTime(400 * rate, t + 0.07);
+  /** Filtered noise burst, e.g. a muzzle crack or the body of a rumble. */
+  private noiseBurst(
+    ctx: AudioContext,
+    out: AudioNode,
+    at: number,
+    spec: NoiseSpec,
+    volume: number,
+    rate: number,
+  ): void {
+    const source = ctx.createBufferSource();
+    if (!this.noise) return;
+    source.buffer = this.noise;
+    source.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = spec.type;
+    filter.Q.value = spec.q;
+    filter.frequency.setValueAtTime(clampFreq(spec.from * rate), at);
+    filter.frequency.exponentialRampToValueAtTime(clampFreq(spec.to * rate), at + spec.decay);
     const env = ctx.createGain();
-    env.gain.setValueAtTime(0.0001, t);
-    env.gain.exponentialRampToValueAtTime(0.55 * volume, t + 0.003);
-    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
-    noise.connect(band);
-    band.connect(env);
+    env.gain.setValueAtTime(0.0001, at);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0002, spec.gain * volume), at + spec.attack);
+    env.gain.exponentialRampToValueAtTime(0.0001, at + spec.attack + spec.decay);
+    source.connect(filter);
+    filter.connect(env);
     env.connect(out);
-    noise.start(t);
-    noise.stop(t + 0.14);
+    source.start(at);
+    source.stop(at + spec.attack + spec.decay + 0.05);
   }
 
-  /** Explosion: long noise sweep through a falling lowpass + 55→28 Hz sub. */
-  private synthExplosion(ctx: AudioContext, volume: number, rate: number): void {
-    const out = this.dest();
-    if (!out) return;
-    const t = ctx.currentTime;
-    const noise = this.noiseSource(ctx);
-    if (noise) {
-      const lowpass = ctx.createBiquadFilter();
-      lowpass.type = 'lowpass';
-      lowpass.Q.value = 1.1;
-      lowpass.frequency.setValueAtTime(1500 * rate, t);
-      lowpass.frequency.exponentialRampToValueAtTime(70, t + 0.85);
-      const env = ctx.createGain();
-      env.gain.setValueAtTime(0.0001, t);
-      env.gain.exponentialRampToValueAtTime(0.95 * volume, t + 0.012);
-      env.gain.exponentialRampToValueAtTime(0.0001, t + 1.1);
-      noise.connect(lowpass);
-      lowpass.connect(env);
-      env.connect(out);
-      noise.start(t);
-      noise.stop(t + 1.2);
-    }
-    const sub = ctx.createOscillator();
-    sub.type = 'sine';
-    sub.frequency.setValueAtTime(55 * rate, t);
-    sub.frequency.exponentialRampToValueAtTime(28, t + 0.8);
-    const subEnv = ctx.createGain();
-    subEnv.gain.setValueAtTime(0.0001, t);
-    subEnv.gain.exponentialRampToValueAtTime(0.6 * volume, t + 0.02);
-    subEnv.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
-    sub.connect(subEnv);
-    subEnv.connect(out);
-    sub.start(t);
-    sub.stop(t + 1);
+  /** Pitched sine/triangle body with a falling pitch. */
+  private tone(
+    ctx: AudioContext,
+    out: AudioNode,
+    at: number,
+    spec: ToneSpec,
+    volume: number,
+    rate: number,
+  ): void {
+    const osc = ctx.createOscillator();
+    osc.type = spec.type;
+    osc.frequency.setValueAtTime(clampFreq(spec.from * rate), at);
+    osc.frequency.exponentialRampToValueAtTime(clampFreq(spec.to), at + spec.decay);
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, at);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0002, spec.gain * volume), at + spec.attack);
+    env.gain.exponentialRampToValueAtTime(0.0001, at + spec.attack + spec.decay);
+    osc.connect(env);
+    env.connect(out);
+    osc.start(at);
+    osc.stop(at + spec.attack + spec.decay + 0.05);
   }
 
-  /** UI click: short square blip, no reverb tail. */
-  private synthClick(ctx: AudioContext, volume: number): void {
-    const out = this.dest();
-    if (!out) return;
-    const t = ctx.currentTime;
+  /** A short metallic ring — used for breeches, magazines and ricochets. */
+  private clank(
+    ctx: AudioContext,
+    out: AudioNode,
+    at: number,
+    frequency: number,
+    volume: number,
+  ): void {
     const osc = ctx.createOscillator();
     osc.type = 'square';
-    osc.frequency.setValueAtTime(1180, t);
-    osc.frequency.exponentialRampToValueAtTime(760, t + 0.035);
+    osc.frequency.setValueAtTime(clampFreq(frequency), at);
+    osc.frequency.exponentialRampToValueAtTime(clampFreq(frequency * 0.72), at + 0.06);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.Q.value = 3.5;
+    filter.frequency.value = clampFreq(frequency * 1.4);
     const env = ctx.createGain();
-    env.gain.setValueAtTime(0.0001, t);
-    env.gain.exponentialRampToValueAtTime(0.22 * volume, t + 0.003);
-    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
-    osc.connect(env);
+    env.gain.setValueAtTime(0.0001, at);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0002, 0.3 * volume), at + 0.002);
+    env.gain.exponentialRampToValueAtTime(0.0001, at + 0.1);
+    osc.connect(filter);
+    filter.connect(env);
     env.connect(out);
-    osc.start(t);
-    osc.stop(t + 0.06);
+    osc.start(at);
+    osc.stop(at + 0.12);
   }
 
-  /** UI back/cancel: descending two-tone sine. */
-  private synthBack(ctx: AudioContext, volume: number): void {
+  // -------------------------------------------------------------- signatures
+
+  private render(ctx: AudioContext, name: SoundName, volume: number, rate: number): void {
     const out = this.dest();
     if (!out) return;
     const t = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(520, t);
-    osc.frequency.exponentialRampToValueAtTime(300, t + 0.09);
-    const env = ctx.createGain();
-    env.gain.setValueAtTime(0.0001, t);
-    env.gain.exponentialRampToValueAtTime(0.2 * volume, t + 0.004);
-    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
-    osc.connect(env);
-    env.connect(out);
-    osc.start(t);
-    osc.stop(t + 0.13);
-  }
 
-  /** Magazine change: two metallic ticks + a low clunk. */
-  private synthReload(ctx: AudioContext, volume: number, rate: number): void {
-    const out = this.dest();
-    if (!out) return;
-    const start = ctx.currentTime;
-    const offsets = [0, 0.12];
-    for (const offset of offsets) {
-      const t = start + offset;
-      const noise = this.noiseSource(ctx);
-      if (!noise) continue;
-      const band = ctx.createBiquadFilter();
-      band.type = 'bandpass';
-      band.Q.value = 5;
-      band.frequency.setValueAtTime(2400 * rate, t);
-      const env = ctx.createGain();
-      env.gain.setValueAtTime(0.0001, t);
-      env.gain.exponentialRampToValueAtTime(0.3 * volume, t + 0.002);
-      env.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
-      noise.connect(band);
-      band.connect(env);
-      env.connect(out);
-      noise.start(t);
-      noise.stop(t + 0.08);
+    switch (name) {
+      // Bolt-action: a hard supersonic snap, very little body, dry tail.
+      case 'rifleShot':
+        this.noiseBurst(
+          ctx, out, t,
+          { type: 'bandpass', from: 3200, to: 700, q: 0.7, gain: 0.85, attack: 0.003, decay: 0.1 },
+          volume, rate,
+        );
+        this.tone(ctx, out, t, { type: 'triangle', from: 190, to: 60, gain: 0.34, attack: 0.004, decay: 0.13 }, volume, rate);
+        break;
+
+      // SMG: brighter and drier, with a hint of mechanical cycling.
+      case 'smgShot':
+        this.noiseBurst(
+          ctx, out, t,
+          { type: 'bandpass', from: 4200, to: 1200, q: 1.1, gain: 0.62, attack: 0.002, decay: 0.055 },
+          volume, rate,
+        );
+        this.tone(ctx, out, t, { type: 'square', from: 240, to: 90, gain: 0.16, attack: 0.002, decay: 0.05 }, volume, rate);
+        break;
+
+      // MG: heavier and slower, with real low-end push and a longer tail.
+      case 'mgShot':
+        this.noiseBurst(
+          ctx, out, t,
+          { type: 'bandpass', from: 1900, to: 260, q: 0.5, gain: 0.9, attack: 0.004, decay: 0.19 },
+          volume, rate,
+        );
+        this.tone(ctx, out, t, { type: 'triangle', from: 150, to: 44, gain: 0.5, attack: 0.005, decay: 0.22 }, volume, rate);
+        this.noiseBurst(
+          ctx, out, t + 0.06,
+          { type: 'lowpass', from: 400, to: 120, q: 0.6, gain: 0.3, attack: 0.008, decay: 0.24 },
+          volume, 1,
+        );
+        break;
+
+      // Tank main gun: a cannon blast with a breech clank right behind it.
+      case 'shellFire':
+        this.noiseBurst(
+          ctx, out, t,
+          { type: 'lowpass', from: 2600, to: 90, q: 1.2, gain: 1, attack: 0.006, decay: 0.6 },
+          volume, rate,
+        );
+        this.tone(ctx, out, t, { type: 'sine', from: 82, to: 26, gain: 0.75, attack: 0.01, decay: 0.7 }, volume, rate);
+        this.clank(ctx, out, t + 0.09, 1100, volume * 0.5);
+        break;
+
+      // Metallic ricochet: bright ping that falls away with a buzz.
+      case 'ricochet':
+        this.noiseBurst(
+          ctx, out, t,
+          { type: 'bandpass', from: 5200, to: 1800, q: 6, gain: 0.5, attack: 0.002, decay: 0.13 },
+          volume, rate,
+        );
+        this.tone(ctx, out, t, { type: 'square', from: 2600, to: 900, gain: 0.2, attack: 0.002, decay: 0.16 }, volume, rate);
+        break;
+
+      // Bullet striking dirt or a body: a dull, closed tick.
+      case 'impact':
+        this.noiseBurst(
+          ctx, out, t,
+          { type: 'lowpass', from: 1400, to: 300, q: 1.4, gain: 0.55, attack: 0.002, decay: 0.075 },
+          volume, rate,
+        );
+        break;
+
+      // Shell blast: long low rumble with a debris crackle on top.
+      case 'explosion':
+        this.noiseBurst(
+          ctx, out, t,
+          { type: 'lowpass', from: 1800, to: 60, q: 1.1, gain: 0.95, attack: 0.012, decay: 1 },
+          volume, rate,
+        );
+        this.tone(ctx, out, t, { type: 'sine', from: 60, to: 24, gain: 0.7, attack: 0.02, decay: 0.9 }, volume, rate);
+        this.noiseBurst(
+          ctx, out, t + 0.16,
+          { type: 'highpass', from: 2200, to: 900, q: 0.8, gain: 0.22, attack: 0.02, decay: 0.5 },
+          volume, 1,
+        );
+        break;
+
+      // Mine: dirtier and more abrupt than a shell, all low-mid.
+      case 'mineBlast':
+        this.noiseBurst(
+          ctx, out, t,
+          { type: 'lowpass', from: 1100, to: 50, q: 1.6, gain: 0.9, attack: 0.006, decay: 0.8 },
+          volume, rate,
+        );
+        this.tone(ctx, out, t, { type: 'triangle', from: 90, to: 30, gain: 0.6, attack: 0.008, decay: 0.55 }, volume, rate);
+        this.noiseBurst(
+          ctx, out, t + 0.12,
+          { type: 'highpass', from: 1600, to: 700, q: 1, gain: 0.26, attack: 0.01, decay: 0.45 },
+          volume, 1,
+        );
+        break;
+
+      // Reinforcements arriving: a truck horn over an engine rumble.
+      case 'deploy':
+        this.tone(ctx, out, t, { type: 'sawtooth', from: 300, to: 280, gain: 0.16, attack: 0.02, decay: 0.3 }, volume, 1);
+        this.tone(ctx, out, t + 0.04, { type: 'triangle', from: 420, to: 415, gain: 0.14, attack: 0.02, decay: 0.24 }, volume, 1);
+        break;
+
+      // Logistics upgrade: an ascending two-note confirmation.
+      case 'upgrade':
+        this.tone(ctx, out, t, { type: 'triangle', from: 520, to: 520, gain: 0.22, attack: 0.008, decay: 0.12 }, volume, 1);
+        this.tone(ctx, out, t + 0.1, { type: 'triangle', from: 780, to: 780, gain: 0.22, attack: 0.008, decay: 0.18 }, volume, 1);
+        break;
+
+      case 'uiClick':
+        this.tone(ctx, out, t, { type: 'square', from: 1180, to: 760, gain: 0.2, attack: 0.003, decay: 0.05 }, volume, 1);
+        break;
+
+      case 'uiBack':
+        this.tone(ctx, out, t, { type: 'sine', from: 520, to: 300, gain: 0.2, attack: 0.004, decay: 0.1 }, volume, 1);
+        break;
     }
-    const clunk = ctx.createOscillator();
-    clunk.type = 'triangle';
-    const t = start + 0.12;
-    clunk.frequency.setValueAtTime(220, t);
-    clunk.frequency.exponentialRampToValueAtTime(90, t + 0.07);
-    const clunkEnv = ctx.createGain();
-    clunkEnv.gain.setValueAtTime(0.0001, t);
-    clunkEnv.gain.exponentialRampToValueAtTime(0.25 * volume, t + 0.004);
-    clunkEnv.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
-    clunk.connect(clunkEnv);
-    clunkEnv.connect(out);
-    clunk.start(t);
-    clunk.stop(t + 0.1);
   }
 }
 
@@ -407,13 +476,19 @@ function createNoiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {
   const length = Math.max(1, Math.floor(ctx.sampleRate * seconds));
   const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
   const channel = buffer.getChannelData(0);
-  // Deterministic LCG: identical noise on every device, no Math.random seeding.
+  // Deterministic LCG: identical noise on every device, no seeding surprises.
   let state = 0x2f6e2b1;
   for (let i = 0; i < length; i += 1) {
     state = (state * 1664525 + 1013904223) >>> 0;
     channel[i] = (state / 0xffffffff) * 2 - 1;
   }
   return buffer;
+}
+
+/** Biquad/oscillator frequencies must stay inside Nyquist or they throw. */
+function clampFreq(value: number): number {
+  if (!Number.isFinite(value)) return 100;
+  return Math.min(20000, Math.max(10, value));
 }
 
 function clamp(value: number, min: number, max: number): number {

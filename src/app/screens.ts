@@ -131,7 +131,7 @@ function statusLabel(state: CampaignNodeState): string {
     case 'contested':
       return `contested · ${state.losses} failed attempt${state.losses === 1 ? '' : 's'}`;
     case 'current':
-      return 'next objective';
+      return 'available · next objective';
     default:
       return 'locked';
   }
@@ -168,7 +168,7 @@ export function mapScreenHtml(save: SaveData): string {
   const legend = (
     [
       ['cleared', 'cleared'],
-      ['current', 'next objective'],
+      ['current', 'available'],
       ['contested', 'contested'],
       ['locked', 'locked'],
     ] as readonly (readonly [NodeStatus, string])[]
@@ -205,7 +205,7 @@ export function mapScreenHtml(save: SaveData): string {
       <div class="map-footer">
         <span class="objective">${
           objective
-            ? `next objective: <b>${escapeHtml(objective.name)}</b> (${escapeHtml(objective.year)})`
+            ? `available: <b>${escapeHtml(objective.name)}</b> (${escapeHtml(objective.year)})`
             : 'campaign complete'
         }</span>
         <div class="screen-actions">
@@ -305,8 +305,10 @@ export interface CampView {
   /** Supplies per second this sector actually pays. */
   readonly supplyRate: number;
   readonly baseHp: number;
+  /** Multiplier the armory's Damage track applies to every unit. */
   readonly damageMultiplier: number;
-  readonly fireRateMultiplier: number;
+  /** Multiplier the armory's Unit Health track applies to every unit. */
+  readonly unitHpMultiplier: number;
 }
 
 export function campHtml(save: SaveData, view: CampView): string {
@@ -344,7 +346,8 @@ export function campHtml(save: SaveData, view: CampView): string {
   const roster = UNIT_ORDER.map((kind) => {
     const stats = UNIT_STATS[kind];
     const damage = stats.damage * view.damageMultiplier;
-    const rate = stats.fireRate * view.fireRateMultiplier;
+    const hp = stats.hp * view.unitHpMultiplier;
+    const rate = stats.fireRate;
     return `
       <li class="unit-card">
         <div class="unit-card-head">
@@ -352,7 +355,7 @@ export function campHtml(save: SaveData, view: CampView): string {
           <span class="cost">${stats.cost} supplies</span>
         </div>
         <p class="unit-card-note">${escapeHtml(unitNote(kind))}</p>
-        <p class="mono unit-card-stats">${stats.hp} hp · ${Math.round(damage)} dmg · ${rate.toFixed(
+        <p class="mono unit-card-stats">${Math.round(hp)} hp · ${Math.round(damage)} dmg · ${rate.toFixed(
           2,
         )}/s · ${stats.range}px range${
           stats.blast ? ` · ${stats.blast}px blast` : ''
@@ -380,7 +383,7 @@ export function campHtml(save: SaveData, view: CampView): string {
           <li><span>supply rate here</span><b>${view.supplyRate.toFixed(1)}/s</b></li>
           <li><span>base hit points</span><b>${formatNumber(view.baseHp)}</b></li>
           <li><span>unit damage</span><b>×${view.damageMultiplier.toFixed(2)}</b></li>
-          <li><span>unit rate of fire</span><b>×${view.fireRateMultiplier.toFixed(2)}</b></li>
+          <li><span>unit hit points</span><b>×${view.unitHpMultiplier.toFixed(2)}</b></li>
         </ul>
         <ul class="unit-list">${roster}</ul>
         <p class="fine">Every figure on the field is drawn procedurally — no sprite
@@ -497,9 +500,13 @@ export function diagnosticsHtml(view: DiagnosticsView): string {
       <li><span>network calls needed to play</span><b>0</b></li>
     </ul>
     <div class="screen-actions">
-      <button type="button" class="btn btn--small" data-action="play-sound" data-sound="shot">shot</button>
-      <button type="button" class="btn btn--small" data-action="play-sound" data-sound="hit">hit</button>
+      <button type="button" class="btn btn--small" data-action="play-sound" data-sound="rifleShot">rifle</button>
+      <button type="button" class="btn btn--small" data-action="play-sound" data-sound="smgShot">smg</button>
+      <button type="button" class="btn btn--small" data-action="play-sound" data-sound="mgShot">mg</button>
+      <button type="button" class="btn btn--small" data-action="play-sound" data-sound="shellFire">shell</button>
+      <button type="button" class="btn btn--small" data-action="play-sound" data-sound="ricochet">ricochet</button>
       <button type="button" class="btn btn--small" data-action="play-sound" data-sound="explosion">explosion</button>
+      <button type="button" class="btn btn--small" data-action="play-sound" data-sound="mineBlast">mine</button>
       <button type="button" class="btn btn--small" data-action="play-sound" data-sound="uiClick">ui</button>
       <button type="button" class="btn btn--small" data-action="request-landscape">⛶ landscape</button>
       <button type="button" class="btn btn--small btn--danger" data-action="reset-save">reset save</button>

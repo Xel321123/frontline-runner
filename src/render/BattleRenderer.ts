@@ -23,6 +23,7 @@ import {
   ENEMY_BASE_X,
   GROUND_Y,
   LOGISTICS_MAX_LEVEL,
+  MAX_UNITS_PER_SIDE,
   VIEW_HEIGHT,
   VIEW_WIDTH,
 } from '../game/constants';
@@ -120,6 +121,7 @@ export class BattleRenderer {
     ctx.beginPath();
     ctx.rect(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
     ctx.clip();
+    this.drawBaseAlert(ctx, state);
     this.drawHud(ctx, state, hud);
     ctx.restore();
   }
@@ -411,7 +413,13 @@ export class BattleRenderer {
       TOP_BAR_HEIGHT - 6,
     );
     ctx.textAlign = 'right';
-    ctx.fillText(`fielded ${state.stats.deployed} · kills ${state.stats.kills}`, VIEW_WIDTH - 16, TOP_BAR_HEIGHT - 6);
+    const atCap = state.playerUnits >= MAX_UNITS_PER_SIDE;
+    ctx.fillStyle = atCap ? SCENE.warning : SCENE.hudDim;
+    ctx.fillText(
+      `fielded ${state.stats.deployed} · kills ${state.stats.kills}${atCap ? ' · LINE FULL' : ''}`,
+      VIEW_WIDTH - 16,
+      TOP_BAR_HEIGHT - 6,
+    );
     ctx.textAlign = 'left';
   }
 
@@ -526,6 +534,25 @@ export class BattleRenderer {
         rect.y + 74,
       );
       ctx.globalAlpha = 1;
+
+      // Deployment cooldown: a descending veil with the seconds left, so the
+      // bar itself is the timer.
+      if (option && option.cooldown > 0.01 && option.cooldownTotal > 0) {
+        const fraction = Math.min(1, option.cooldown / option.cooldownTotal);
+        const inner = { x: rect.x + 2, y: rect.y + 2, w: rect.w - 4, h: rect.h - 4 };
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(inner.x, inner.y, inner.w, inner.h, 7);
+        ctx.clip();
+        ctx.fillStyle = 'rgba(6, 9, 7, 0.72)';
+        ctx.fillRect(inner.x, inner.y, inner.w, inner.h * fraction);
+        ctx.font = `700 17px ${FONT}`;
+        ctx.fillStyle = SCENE.warning;
+        ctx.textAlign = 'center';
+        ctx.fillText(option.cooldown.toFixed(1), rect.x + rect.w * 0.5, rect.y + rect.h * 0.5 + 2);
+        ctx.textAlign = 'left';
+        ctx.restore();
+      }
 
       // Hotkey badge.
       ctx.fillStyle = 'rgba(8, 10, 8, 0.8)';
@@ -648,6 +675,28 @@ export class BattleRenderer {
     if (count === 0) return 0.5;
     const average = sum / count;
     return Math.max(0, Math.min(1, average / VIEW_WIDTH));
+  }
+
+  /**
+   * A red pulse at the screen edge while the player's own base is being hit —
+   * the one piece of feedback that stops a losing battle being noticed late.
+   */
+  private drawBaseAlert(ctx: CanvasRenderingContext2D, state: TugState): void {
+    const hit = state.playerBase.hit;
+    if (hit <= 0) return;
+    const strength = Math.min(1, hit / 0.35) * 0.55;
+    const gradient = ctx.createRadialGradient(
+      VIEW_WIDTH / 2,
+      VIEW_HEIGHT / 2,
+      VIEW_WIDTH * 0.32,
+      VIEW_WIDTH / 2,
+      VIEW_HEIGHT / 2,
+      VIEW_WIDTH * 0.72,
+    );
+    gradient.addColorStop(0, 'rgba(180, 40, 30, 0)');
+    gradient.addColorStop(1, `rgba(196, 52, 38, ${strength.toFixed(3)})`);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
   }
 
   private drawResultBanner(ctx: CanvasRenderingContext2D, state: TugState): void {

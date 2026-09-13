@@ -32,9 +32,9 @@ export function isFaction(value: unknown): value is Faction {
 export type StageId = string;
 
 /** Permanent upgrade tracks bought with war bonds. */
-export type UpgradeId = 'firepower' | 'armour' | 'mobility' | 'medkit';
+export type UpgradeId = 'health' | 'damage' | 'baseHp';
 
-export const UPGRADE_IDS: readonly UpgradeId[] = ['firepower', 'armour', 'mobility', 'medkit'];
+export const UPGRADE_IDS: readonly UpgradeId[] = ['health', 'damage', 'baseHp'];
 
 export function isUpgradeId(value: unknown): value is UpgradeId {
   return typeof value === 'string' && (UPGRADE_IDS as readonly string[]).includes(value);
@@ -99,7 +99,7 @@ export function createFreshSave(now: number, startingStages: readonly StageId[])
     faction: null,
     unlockedStages: [...startingStages],
     warBonds: 0,
-    upgrades: { firepower: 0, armour: 0, mobility: 0, medkit: 0 },
+    upgrades: { health: 0, damage: 0, baseHp: 0 },
     settings: { muted: false },
     records: {},
     updatedAt: now,

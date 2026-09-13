@@ -51,6 +51,7 @@ import {
   ENEMY_DEPLOY_JITTER,
   ENEMY_HP_PER_TIER_SCALE,
   GROUND_Y,
+  HOLD_LINE_X,
   LOGISTICS_BASE_COST,
   LOGISTICS_COST_STEP,
   LOGISTICS_MAX_LEVEL,
@@ -61,7 +62,6 @@ import {
   MUZZLE_FLASH_TIME,
   PARTICLE_CAP,
   PARTICLE_GRAVITY,
-  PLAYER_DEPLOY_COOLDOWN,
   PROJECTILE_MAX_LIFE,
   SHELL_GRAVITY,
   SHELL_SPEED,
@@ -127,7 +127,7 @@ export class TugSimulation {
   private bondsValue = 0;
   private logisticsLevelValue = 0;
   private enemySuppliesValue: number;
-  private playerDeployCooldown = 0;
+  private readonly deployCooldowns = new Map<UnitKind, number>();
   private enemyDeployTimer: number;
   private focusValue = VIEW_WIDTH / 2;
   private shakeValue = 0;
@@ -221,6 +221,7 @@ export class TugSimulation {
       deployOptions: this.deployOptions(),
       enemySupplies: this.enemySuppliesValue,
       enemyUnits: this.countUnits('enemy'),
+      playerUnits: this.countUnits('player'),
     };
   }
 
@@ -259,7 +260,9 @@ export class TugSimulation {
   }
 
   private handleCommand(dt: number, command: MatchCommand): void {
-    this.playerDeployCooldown = Math.max(0, this.playerDeployCooldown - dt);
+    for (const [kind, remaining] of this.deployCooldowns) {
+      if (remaining > 0) this.deployCooldowns.set(kind, Math.max(0, remaining - dt));
+    }
 
     if (command.buyLogistics) {
       const cost = logisticsCost(this.logisticsLevelValue);
@@ -271,14 +274,15 @@ export class TugSimulation {
       }
     }
 
-    if (command.deploy && this.playerDeployCooldown <= 0) {
+    if (command.deploy) {
       const kind = command.deploy;
       const cost = this.unitCostFor(kind);
-      if (this.suppliesValue >= cost && this.countUnits('player') < MAX_UNITS_PER_SIDE) {
+      const ready = (this.deployCooldowns.get(kind) ?? 0) <= 0;
+      if (this.suppliesValue >= cost && ready && this.countUnits('player') < MAX_UNITS_PER_SIDE) {
         this.suppliesValue -= cost;
         this.spawnUnit('player', kind);
         this.statsValue.deployed += 1;
-        this.playerDeployCooldown = PLAYER_DEPLOY_COOLDOWN;
+        this.deployCooldowns.set(kind, unitStats(kind).deployCooldown);
         this.emit({ type: 'deploy', kind });
       }
     }
@@ -286,15 +290,21 @@ export class TugSimulation {
 
   private deployOptions(): DeployOption[] {
     const options: DeployOption[] = [];
+    const atCap = this.countUnits('player') >= MAX_UNITS_PER_SIDE;
     for (const kind of ['rifleman', 'smg', 'mg', 'tank'] as UnitKind[]) {
       const stats = UNIT_STATS[kind];
+      const cost = this.unitCostFor(kind);
+      const cooldown = this.deployCooldowns.get(kind) ?? 0;
+      const affordable = this.suppliesValue >= cost;
       options.push({
         kind,
         name: stats.name,
-        cost: this.unitCostFor(kind),
-        affordable: this.suppliesValue >= stats.cost,
-        ready:
-          this.suppliesValue >= stats.cost && this.countUnits('player') < MAX_UNITS_PER_SIDE,
+        cost,
+        affordable,
+        // `ready` is what the button acts on: affordable, off cooldown, not capped.
+        ready: affordable && cooldown <= 0 && !atCap,
+        cooldown,
+        cooldownTotal: stats.deployCooldown,
       });
     }
     return options;
@@ -349,8 +359,12 @@ export class TugSimulation {
   private spawnUnit(side: Side, kind: UnitKind): Unit {
     const stats = unitStats(kind);
     const facing: 1 | -1 = side === 'player' ? 1 : -1;
+    // Enemy units scale with the campaign tier; the player's scale with the
+    // armory's Unit Health track instead.
     const hpScale =
-      side === 'enemy' ? 1 + (this.config.tier - 1) * ENEMY_HP_PER_TIER_SCALE : 1;
+      side === 'enemy'
+        ? 1 + (this.config.tier - 1) * ENEMY_HP_PER_TIER_SCALE
+        : this.config.unitHpMultiplier;
     const maxHp = stats.hp * hpScale;
     const unit: Unit = {
       id: this.nextId,
@@ -403,6 +417,17 @@ export class TugSimulation {
     const stats = unitStats(kind);
     if (kind !== 'tank') return stats.cost;
     return Math.round(stats.cost * this.rules.tankCostMultiplier);
+  }
+
+  /**
+   * True when this unit is the defender in a survival battle and has reached
+   * the line it is meant to hold — it digs in rather than pursuing. Without
+   * this, "hold the line" missions turned into an advance across the player's
+   * own minefield.
+   */
+  private holdsLine(unit: Unit): boolean {
+    if (this.config.missionType !== 'survive_timer' || unit.side !== 'player') return false;
+    return unit.x >= HOLD_LINE_X;
   }
 
   /** A bridge span only holds so many units of one side at a time. */
@@ -511,7 +536,11 @@ export class TugSimulation {
         // Units walk past each other to their own firing distance — a queue in
         // single file would mean only the front man ever shoots. A bridge span
         // is the one place they really cannot pass: it is a chokepoint.
-        if (!this.isBridgeFull(unit)) {
+        // Holding a line is a state, not merely a blocked advance: a defender
+        // waiting on its line counts as stopped, and so takes trench cover.
+        if (this.holdsLine(unit)) {
+          unit.state = 'hold';
+        } else if (!this.isBridgeFull(unit)) {
           unit.x += unit.facing * this.unitSpeed(unit) * dt;
         }
       }
@@ -546,7 +575,7 @@ export class TugSimulation {
   private fire(unit: Unit, targetX: number): void {
     const stats = unitStats(unit.kind);
     const rate =
-      stats.fireRate * (unit.side === 'player' ? this.config.fireRateMultiplier : 1);
+      stats.fireRate;
     unit.cooldown = 1 / rate;
     unit.flash = MUZZLE_FLASH_TIME;
     unit.recoil = 1;
@@ -580,7 +609,7 @@ export class TugSimulation {
       this.ejectCasing(unit, muzzleX);
       this.smokePuff(muzzleX, muzzleY, unit.facing);
       this.shakeValue = Math.max(this.shakeValue, 2.2);
-      this.emit({ type: 'shell' });
+      this.emit({ type: 'shell', kind: unit.kind });
       return;
     }
 
@@ -601,7 +630,7 @@ export class TugSimulation {
     }
     this.muzzleBurst(muzzleX, muzzleY, unit.facing);
     this.ejectCasing(unit, muzzleX);
-    this.emit({ type: 'shot' });
+    this.emit({ type: 'shot', kind: unit.kind });
   }
 
   // -------------------------------------------------------------- projectiles
@@ -629,7 +658,7 @@ export class TugSimulation {
         } else {
           this.hitUnit(victim, shot.damage, shot.suppress);
           this.impactSparks(shot.x, shot.y, shot.vx > 0 ? 1 : -1);
-          this.emit({ type: 'impact' });
+          this.emit({ type: 'impact', metal: victim.kind === 'tank' });
         }
         shot.life = 0;
         continue;
@@ -755,7 +784,8 @@ export class TugSimulation {
         suppress: 0,
         blast: 0,
       });
-      this.emit({ type: 'shot' });
+      // The emplacement gun is a heavy automatic: it shares the MG signature.
+      this.emit({ type: 'shot', kind: 'mg' });
     }
   }
 

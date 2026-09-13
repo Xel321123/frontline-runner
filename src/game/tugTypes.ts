@@ -36,7 +36,8 @@ export interface Unit {
   maxHp: number;
   /** Seconds until the next shot. */
   cooldown: number;
-  state: 'advance' | 'engage';
+  /** `hold` = stopped on its line without a target in range (dug in). */
+  state: 'advance' | 'hold' | 'engage';
   /** Muzzle flash timer, seconds remaining. */
   flash: number;
   /** Recoil offset 0..1, decays — the barrel kicks back when it fires. */
@@ -145,6 +146,10 @@ export interface MatchStats {
 export interface DeployOption {
   readonly kind: UnitKind;
   readonly name: string;
+  /** Seconds until this type can be deployed again (0 when ready). */
+  readonly cooldown: number;
+  /** Full length of that cooldown, for drawing the sweep. */
+  readonly cooldownTotal: number;
   readonly cost: number;
   readonly affordable: boolean;
   /** True when the deployment bar slot is shown as available. */
@@ -178,7 +183,8 @@ export interface MatchConfig {
   readonly enemyDeployInterval: number;
   /** Multipliers from campaign upgrades. */
   readonly damageMultiplier: number;
-  readonly fireRateMultiplier: number;
+  /** Multiplier on every player unit's hit points, from the armory. */
+  readonly unitHpMultiplier: number;
   /** Unit kinds the enemy is allowed to field, with weights. */
   readonly enemyMix: readonly { readonly kind: UnitKind; readonly weight: number }[];
   /** Seed for the enemy AI's jitter, derived from the node id. */
@@ -218,6 +224,8 @@ export interface TugState {
   /** Enemy supply readout for the HUD (approximate, for tension). */
   readonly enemySupplies: number;
   readonly enemyUnits: number;
+  /** Live player units on the field (for the cap indicator). */
+  readonly playerUnits: number;
 }
 
 export type SimEventType =
@@ -240,7 +248,10 @@ export type SimEventType =
 export interface SimEvent {
   readonly type: SimEventType;
   readonly amount?: number;
+  /** Which unit type caused it, so audio can pick the right weapon signature. */
   readonly kind?: UnitKind;
+  /** True when the hit landed on armour — the audio layer turns it into a ping. */
+  readonly metal?: boolean;
 }
 
 /** One frame of player intent, produced by the input layer. */

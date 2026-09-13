@@ -21,9 +21,9 @@ export function effectiveSupplyRate(stage: StageDefinition): number {
  * numbers can never drift from what ships.
  */
 
-import { getUpgrade } from '../core/progression';
+import { getUpgrade, type UpgradeDefinition } from '../core/progression';
 import type { StageDefinition } from '../core/progression';
-import type { SaveData } from '../core/types';
+import type { SaveData, UpgradeId } from '../core/types';
 import { hashString } from './rng';
 import {
   ASSAULT_ATTACKER_SUPPLY_BONUS,
@@ -56,10 +56,14 @@ function enemyMixForTier(tier: number): { kind: UnitKind; weight: number }[] {
   return mix;
 }
 
-function perLevel(id: 'armour' | 'firepower' | 'mobility' | 'medkit', key: string): number {
+/**
+ * Read one upgrade's per-level effect. Typed against the definition so a track
+ * cannot advertise an effect the simulation does not implement.
+ */
+function perLevel(id: UpgradeId, key: keyof UpgradeDefinition['perLevel']): number {
   const upgrade = getUpgrade(id);
   if (!upgrade) return 0;
-  const value = (upgrade.perLevel as Record<string, number | undefined>)[key];
+  const value = upgrade.perLevel[key] as number | undefined;
   return typeof value === 'number' ? value : 0;
 }
 
@@ -67,10 +71,12 @@ export function createMatchConfig(stage: StageDefinition, save: SaveData): Match
   const levels = save.upgrades;
   const enemyFaction = stage.faction === 'allied' ? 'axis' : 'allied';
 
-  const damageMultiplier = 1 + perLevel('firepower', 'damage') * levels.firepower;
-  const fireRateMultiplier = 1 + perLevel('mobility', 'fireRate') * levels.mobility;
-  const startSupplies = SUPPLY_START + perLevel('armour', 'supplies') * levels.armour;
-  const baseHp = PLAYER_BASE_HP + perLevel('medkit', 'baseHp') * levels.medkit;
+  const damageMultiplier = 1 + perLevel('damage', 'damage') * levels.damage;
+  const unitHpMultiplier = 1 + perLevel('health', 'unitHp') * levels.health;
+  // Starting supplies are fixed; the armory's three tracks are health,
+  // damage and fortification, so nothing here inflates the opening depot.
+  const startSupplies = SUPPLY_START;
+  const baseHp = PLAYER_BASE_HP + perLevel('baseHp', 'baseHp') * levels.baseHp;
 
   const { missionType, environment, features, supplyRateMultiplier } = stage;
   // An assault is aimed at a prepared position, so the strongpoint is reinforced.
@@ -112,7 +118,7 @@ export function createMatchConfig(stage: StageDefinition, save: SaveData): Match
     enemyDeployInterval:
       missionType === 'survive_timer' ? SURVIVE_ENEMY_DEPLOY_INTERVAL : ENEMY_DEPLOY_INTERVAL,
     damageMultiplier,
-    fireRateMultiplier,
+    unitHpMultiplier,
     enemyMix: enemyMixForTier(stage.tier),
     seed: hashString(`match:${stage.id}`),
   };

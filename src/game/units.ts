@@ -16,6 +16,8 @@ export interface UnitStats {
   readonly name: string;
   /** Supplies spent to field one. */
   readonly cost: number;
+  /** Seconds before this type can be deployed again. */
+  readonly deployCooldown: number;
   readonly hp: number;
   /** Flat damage subtracted from every incoming hit (tanks shrug off rifles). */
   readonly armor: number;
@@ -52,6 +54,7 @@ export const UNIT_STATS: Readonly<Record<UnitKind, UnitStats>> = Object.freeze({
     kind: 'rifleman',
     name: 'Rifleman',
     cost: 20,
+    deployCooldown: 0.3,
     hp: 62,
     armor: 0,
     speed: 60,
@@ -69,6 +72,7 @@ export const UNIT_STATS: Readonly<Record<UnitKind, UnitStats>> = Object.freeze({
     kind: 'smg',
     name: 'SMG Assault',
     cost: 35,
+    deployCooldown: 0.5,
     hp: 74,
     armor: 0,
     speed: 95,
@@ -86,6 +90,7 @@ export const UNIT_STATS: Readonly<Record<UnitKind, UnitStats>> = Object.freeze({
     kind: 'mg',
     name: 'MG Gunner',
     cost: 55,
+    deployCooldown: 1.0,
     hp: 96,
     armor: 1,
     speed: 42,
@@ -106,6 +111,7 @@ export const UNIT_STATS: Readonly<Record<UnitKind, UnitStats>> = Object.freeze({
     kind: 'tank',
     name: 'Tank',
     cost: 140,
+    deployCooldown: 2.5,
     hp: 430,
     armor: 6,
     speed: 34,

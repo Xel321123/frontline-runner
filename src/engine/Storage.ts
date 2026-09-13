@@ -377,6 +377,19 @@ export class GameStorage {
     for (const id of Object.keys(upgrades) as UpgradeId[]) {
       upgrades[id] = clampLevel(id, Number(rawUpgrades[id]));
     }
+    // Saves written before the armory was re-cut for unit health / damage /
+    // fortification carried four tracks. Fold them onto the three that exist
+    // now, keeping the larger level when two legacy tracks map to one target.
+    const LEGACY_UPGRADES: Record<string, UpgradeId> = {
+      armour: 'health',
+      firepower: 'damage',
+      mobility: 'damage',
+      medkit: 'baseHp',
+    };
+    for (const [legacyId, target] of Object.entries(LEGACY_UPGRADES)) {
+      const legacyLevel = clampLevel(target, Number(rawUpgrades[legacyId]));
+      upgrades[target] = Math.max(upgrades[target], legacyLevel);
+    }
 
     const rawSettings =
       typeof source.settings === 'object' && source.settings !== null

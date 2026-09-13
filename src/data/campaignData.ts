@@ -739,7 +739,7 @@ export const ALLIED_CAMPAIGN: readonly CampaignNode[] = [
     missionType: 'assault',
     environment: 'standard',
     features: ['bridge_chokepoint'],
-    supplyRateMultiplier: 1.1,
+    supplyRateMultiplier: 1.35,
     briefing:
       'Operation Market Garden dropped three airborne divisions in the Netherlands on 17 September 1944 to seize a chain of bridges ending at Arnhem. The British 1st Airborne held the north end of the Arnhem bridge for four days but could not be relieved, and the plan failed at the last bridge.',
   },
@@ -769,7 +769,7 @@ export const ALLIED_CAMPAIGN: readonly CampaignNode[] = [
     missionType: 'survive_timer',
     environment: 'snow',
     features: ['trenches', 'minefield'],
-    supplyRateMultiplier: 0.7,
+    supplyRateMultiplier: 0.85,
     briefing:
       'The 101st Airborne Division was encircled at the crossroads town of Bastogne on 20 December 1944 during the Ardennes offensive. Asked to surrender, its commander answered "Nuts", and the town held until the weather cleared and relief armour broke through on 26 December.',
   },
@@ -1001,7 +1001,7 @@ export const AXIS_CAMPAIGN: readonly CampaignNode[] = [
     missionType: 'destroy_base',
     environment: 'mud',
     features: ['trenches', 'minefield'],
-    supplyRateMultiplier: 0.9,
+    supplyRateMultiplier: 1.15,
     briefing:
       'The Rzhev salient was the scene of repeated Soviet offensives through 1942 against a deep network of trenches and bunkers. The fighting cost enormous casualties on both sides and left the front line barely changed.',
   },
@@ -1271,7 +1271,7 @@ export const AXIS_CAMPAIGN: readonly CampaignNode[] = [
     missionType: 'survive_timer',
     environment: 'mud',
     features: ['trenches'],
-    supplyRateMultiplier: 0.9,
+    supplyRateMultiplier: 1.1,
     briefing:
       'A German army group was encircled south-east of Berlin in April 1945 while the remnants of another army waited to the west. The breakout through the Halbe corridor cost tens of thousands of casualties and ran into rocket-launcher lines on the far side.',
   },
