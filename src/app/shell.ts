@@ -1,10 +1,15 @@
 /**
  * Shell — screens, navigation and the battle lifecycle.
  *
- * One state machine over three screens (title, campaign map, battle) plus modal
- * layers (briefing, camp, result). All navigation is a single delegated click
- * listener reading `data-action` attributes, so adding a button never adds a
- * listener and nothing can leak between screens.
+ * One state machine over three screens (title, campaign map, battle), modal
+ * layers (briefing, camp) and the end-of-battle **splash**. All navigation is a
+ * single delegated click listener reading `data-action` attributes, so adding a
+ * button never adds a listener and nothing can leak between screens.
+ *
+ * The splash is deliberately not a modal: when a sector resolves it covers the
+ * whole viewport by itself and offers the next move, which is what removed the
+ * old need to press Abort to find out how the battle went. The battlefield stays
+ * on screen behind it, frozen, so the player can see what they are leaving.
  *
  * Nothing here talks to the network: the save file is the only state, and the
  * battle reads its configuration straight out of it.
@@ -17,7 +22,7 @@ import { isFaction, isUpgradeId } from '../core/types';
 import type { Faction } from '../core/types';
 import type { GameStorage, SoundName } from '../engine';
 import { createGameStorage, SoundManager } from '../engine';
-import { createMatchConfig, effectiveSupplyRate } from '../game/match';
+import { createMatchConfig, effectiveSupplyRate, positionCountFor } from '../game/match';
 import { stageTagline } from '../game/stageInfo';
 import { UNIT_ORDER } from '../game/units';
 import type { OrientationLockResult } from '../platform/Display';
@@ -29,6 +34,7 @@ import {
 } from '../platform/Display';
 import { createMatchSession, type BattleOutcome, type MatchSession } from './Match';
 import { prefersTouch } from '../platform/Display';
+import { SPLASH_CSS, splashHtml, type SplashView } from './splash';
 import { mustFind, setHtml, show } from './dom';
 import {
   briefingHtml,
@@ -36,13 +42,12 @@ import {
   diagnosticsHtml,
   mapScreenHtml,
   nextObjective,
-  resultHtml,
   titleScreenHtml,
   type CampView,
   type DiagnosticsView,
 } from './screens';
 
-type ModalKind = 'briefing' | 'camp' | 'result' | null;
+type ModalKind = 'briefing' | 'camp' | null;
 
 interface ModalState {
   readonly kind: ModalKind;
@@ -72,6 +77,7 @@ const SHELL_HTML = `
     <div id="modal-layer" hidden><div class="modal" id="modal"></div></div>
   </main>
   <footer class="hint" id="hint"></footer>
+  <div id="splash-layer" hidden></div>
 </div>`;
 
 export async function startShell(root: HTMLElement): Promise<void> {
@@ -82,13 +88,15 @@ export async function startShell(root: HTMLElement): Promise<void> {
     muted: storage.snapshot().settings.muted,
   });
 
+  installStyles();
+
   setHtml(root, SHELL_HTML);
   const screenEl = mustFind<HTMLElement>(root, '#screen');
   const diagnosticsEl = mustFind<HTMLElement>(root, '#diagnostics');
   const playEl = mustFind<HTMLElement>(root, '#play');
-  const stageEl = mustFind<HTMLElement>(root, '#play');
   const modalLayerEl = mustFind<HTMLElement>(root, '#modal-layer');
   const modalEl = mustFind<HTMLElement>(root, '#modal');
+  const splashLayerEl = mustFind<HTMLElement>(root, '#splash-layer');
   const hintEl = mustFind<HTMLElement>(root, '#hint');
   const bondEl = mustFind<HTMLElement>(root, '#bond-count');
   const soundEl = mustFind<HTMLButtonElement>(root, '#btn-sound');
@@ -97,7 +105,8 @@ export async function startShell(root: HTMLElement): Promise<void> {
 
   let modal: ModalState = { kind: null };
   let session: MatchSession | null = null;
-  let lastOutcome: BattleOutcome | null = null;
+  /** Set while the end-of-battle splash is on screen. */
+  let splash: BattleOutcome | null = null;
   let showingTitle = false;
   let diagnosticsOpen = false;
   let orientationLock: OrientationLockResult | 'idle' = 'idle';
@@ -107,6 +116,15 @@ export async function startShell(root: HTMLElement): Promise<void> {
   const debugApi: Record<string, unknown> = { storage, sound };
 
   // ------------------------------------------------------------------ render
+
+  /** The splash stylesheet is injected once, from the module that owns it. */
+  function installStyles(): void {
+    if (document.getElementById('splash-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'splash-styles';
+    style.textContent = SPLASH_CSS;
+    document.head.appendChild(style);
+  }
 
   function objectiveFor(save = storage.snapshot()): StageDefinition | undefined {
     const faction: Faction = save.faction ?? 'allied';
@@ -122,6 +140,9 @@ export async function startShell(root: HTMLElement): Promise<void> {
     }
     const config = createMatchConfig(objective, save);
     const weapon = bestWeaponFor(faction, objective.index);
+    const playerBaseHp = config.bases
+      .filter((base) => base.side === 'player')
+      .reduce((total, base) => total + base.hp, 0);
     return {
       faction,
       stageIndex: objective.index,
@@ -132,7 +153,8 @@ export async function startShell(root: HTMLElement): Promise<void> {
       standardRifleDetail: `${weapon.caliber} · ${weapon.year} · ${weapon.damage} dmg · ${weapon.fireRate}/s · ±${weapon.spread}° · ${weapon.magazineSize} rounds`,
       startSupplies: config.startSupplies,
       supplyRate: effectiveSupplyRate(objective),
-      baseHp: config.playerBaseHp,
+      baseHp: playerBaseHp,
+      positions: `you hold ${positionCountFor('player', objective.tier, objective.missionType)} · the enemy holds ${positionCountFor('enemy', objective.tier, objective.missionType)}`,
       damageMultiplier: config.damageMultiplier,
       unitHpMultiplier: config.unitHpMultiplier,
     };
@@ -171,11 +193,44 @@ export async function startShell(root: HTMLElement): Promise<void> {
       setHtml(modalEl, briefingHtml(stage, save));
     } else if (modal.kind === 'camp') {
       setHtml(modalEl, campHtml(save, campView()));
-    } else if (modal.kind === 'result' && lastOutcome) {
-      const unlocked = lastOutcome.unlockedStage ? getStage(lastOutcome.unlockedStage) : undefined;
-      setHtml(modalEl, resultHtml(lastOutcome, save, unlocked));
     }
     show(modalLayerEl, true);
+  }
+
+  /** The end-of-battle splash, built from the outcome the battle handed over. */
+  function renderSplash(): void {
+    if (!splash) {
+      show(splashLayerEl, false);
+      splashLayerEl.innerHTML = '';
+      return;
+    }
+    const outcome = splash;
+    const stage = getStage(outcome.nodeId);
+    const nextStage = outcome.unlockedStage ? getStage(outcome.unlockedStage) : undefined;
+    const faction: Faction = stage?.faction ?? 'allied';
+    const view: SplashView = {
+      outcome,
+      nextStage: nextStage
+        ? {
+            id: nextStage.id,
+            name: nextStage.name,
+            year: nextStage.year,
+            bossName: nextStage.bossName,
+          }
+        : null,
+      warBonds: storage.snapshot().warBonds,
+      enemyFaction: faction === 'allied' ? 'axis' : 'allied',
+      environment: stage?.environment ?? 'standard',
+      durationLabel: formatDuration(outcome.durationSeconds),
+    };
+    setHtml(splashLayerEl, splashHtml(outcome, view));
+    show(splashLayerEl, true);
+  }
+
+  function formatDuration(seconds: number): string {
+    const minutes = Math.floor(seconds / 60);
+    const rest = Math.floor(seconds % 60);
+    return minutes > 0 ? `${minutes}m ${String(rest).padStart(2, '0')}s` : `${rest}s`;
   }
 
   function renderBar(): void {
@@ -183,10 +238,10 @@ export async function startShell(root: HTMLElement): Promise<void> {
     bondEl.textContent = String(save.warBonds);
     soundEl.textContent = save.settings.muted ? 'sound off' : 'sound on';
     soundEl.setAttribute('aria-pressed', String(!save.settings.muted));
-    show(exitEl, session !== null);
+    show(exitEl, session !== null && splash === null);
 
     if (session) {
-      barSubEl.textContent = 'in the field';
+      barSubEl.textContent = splash ? 'sector resolved' : 'in the field';
     } else if (!save.faction) {
       barSubEl.textContent = 'select a faction to begin';
     } else {
@@ -209,6 +264,7 @@ export async function startShell(root: HTMLElement): Promise<void> {
       if (diagnosticsOpen) setHtml(diagnosticsEl, diagnosticsHtml(diagnosticsView()));
     }
     renderModal();
+    renderSplash();
     renderBar();
     hintEl.textContent = hint;
   }
@@ -239,15 +295,13 @@ export async function startShell(root: HTMLElement): Promise<void> {
 
     // Fullscreen has to be requested from inside the tap that started this, so
     // it happens here rather than after the canvas is built.
-    // Inside the tap that starts the battle, which is the only place a browser
-    // will honour a fullscreen request.
     void enterFullscreen();
     void unlockAudio();
     setBattleChrome(true);
     modal = { kind: null };
-    lastOutcome = null;
+    splash = null;
     session = createMatchSession({
-      container: stageEl,
+      container: playEl,
       storage,
       sound,
       faction: save.faction,
@@ -255,8 +309,8 @@ export async function startShell(root: HTMLElement): Promise<void> {
       handlers: {
         onExit: () => exitBattle(),
         onFinish: (outcome: BattleOutcome) => {
-          lastOutcome = outcome;
-          modal = { kind: 'result' };
+          // The splash appears on its own: no abort, no modal to dismiss first.
+          splash = outcome;
           saveNote = `last battle: ${outcome.status} at ${outcome.nodeName}`;
           render();
         },
@@ -265,10 +319,17 @@ export async function startShell(root: HTMLElement): Promise<void> {
     debugApi.session = session;
     hint = '';
     render();
+    // One line, because the status readout is a readout: the long version wrapped
+    // into the side panels and made the top of the battlefield unreadable.
+    session.say(
+      prefersTouch()
+        ? 'pick a pad and a target, then tap a unit'
+        : 'Tab: pads · Q/E: targets · 1-4: troops',
+    );
     say(
       prefersTouch()
-        ? 'tap a card to deploy · drag the field to pan'
-        : '1-4 or the deployment bar to field units · U boosts logistics · P pauses',
+        ? 'tap a position to pick the launch pad or the objective · drag to pan'
+        : 'Tab cycles launch pads · Q/E cycle objectives · 1-4 field troops · U logistics · P pause',
     );
   }
 
@@ -280,13 +341,23 @@ export async function startShell(root: HTMLElement): Promise<void> {
     debugApi.session = null;
   }
 
+  /** Leaving a resolved battle: the splash goes with it. */
+  function dismissSplash(): void {
+    splash = null;
+    show(splashLayerEl, false);
+    splashLayerEl.innerHTML = '';
+  }
+
   function exitBattle(): void {
+    // Abandoning mid-battle, or closing the splash: either way the battle ends
+    // here and the map comes back.
+    dismissSplash();
     teardownSession();
-    if (lastOutcome) modal = { kind: 'result' };
     render();
   }
 
   function closeBattle(): void {
+    dismissSplash();
     teardownSession();
     modal = { kind: null };
     render();
@@ -333,6 +404,15 @@ export async function startShell(root: HTMLElement): Promise<void> {
     const action = target.dataset.action;
     void unlockAudio();
 
+    // Any action taken from the splash ends the battle behind it first, so the
+    // next sector never starts on top of the previous one's canvas.
+    if (splash && action !== 'toggle-sound' && action !== 'toggle-diagnostics') {
+      splash = null;
+      show(splashLayerEl, false);
+      splashLayerEl.innerHTML = '';
+      teardownSession();
+    }
+
     switch (action) {
       case 'pick-faction':
         pickFaction(target.dataset.faction);
@@ -352,11 +432,6 @@ export async function startShell(root: HTMLElement): Promise<void> {
         modal = { kind: 'camp' };
         break;
       case 'close-modal':
-        // Leaving the result panel ends the battle behind it.
-        if (session) {
-          closeBattle();
-          return;
-        }
         modal = { kind: null };
         break;
       case 'deploy-next':
@@ -421,14 +496,21 @@ export async function startShell(root: HTMLElement): Promise<void> {
   }
 
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && modal.kind) {
-      event.preventDefault();
-      if (session) closeBattle();
-      else {
-        modal = { kind: null };
-        render();
+    if (event.key === 'Escape') {
+      if (splash) {
+        event.preventDefault();
+        exitBattle();
+        return;
       }
-      return;
+      if (modal.kind) {
+        event.preventDefault();
+        if (session) closeBattle();
+        else {
+          modal = { kind: null };
+          render();
+        }
+        return;
+      }
     }
     if (session) return;
     if (event.key === 'Enter' && storage.snapshot().faction) {
@@ -450,7 +532,7 @@ export async function startShell(root: HTMLElement): Promise<void> {
   // -------------------------------------------------------------------- boot
 
   render();
-  say('battlefield ready — everything is drawn from paths, nothing is downloaded');
+  say('isometric battlefield ready — every structure, figure and tree is drawn from SVG paths');
   debugApi.campView = campView;
   (globalThis as unknown as { frontline?: unknown }).frontline = debugApi;
   render();

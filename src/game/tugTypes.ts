@@ -1,9 +1,14 @@
 /**
- * Tug-of-war entity and state types.
+ * Isometric battlefield entity and state types (v2).
  *
  * The simulation owns the arrays and mutates them in place (dead entries are
  * compacted out with a swap-remove), so `TugState` hands the renderer live
  * references — treat everything it exposes as read-only from the outside.
+ *
+ * Positions are on the **ground plane**: `x` runs from the player's rear toward
+ * the enemy, `y` is depth. `z` exists only for things that leave the ground —
+ * shell arcs, thrown debris, helmets knocked off — and is never used for
+ * collision on the plane itself.
  *
  * Visual game feel (muzzle flashes, ejected casings, impact sparks, smoke,
  * screen-shake amplitude) is simulation state too, not renderer bookkeeping.
@@ -18,26 +23,38 @@ import type {
   MissionType,
 } from '../data/campaignData';
 import type { FeatureLayout } from './features';
-import type { UnitKind } from './units';
+import type { BaseKind, UnitKind } from './units';
 
 export type Side = 'player' | 'enemy';
 
 export type MatchStatus = 'running' | 'victory' | 'defeat';
 
-export type LossReason = 'base-destroyed' | 'time-expired' | null;
+/** Why the battle ended: every position razed, or the clock deciding it. */
+export type LossReason = 'bases-destroyed' | 'time-expired' | null;
+
+/** A unit's place in the fight this step. */
+export type UnitState = 'advance' | 'hold' | 'engage';
 
 export interface Unit {
   id: number;
   side: Side;
   kind: UnitKind;
-  /** Horizontal position on the battlefield, px. */
+  /** Ground-plane position, world units. */
   x: number;
+  y: number;
+  /** Heading in world axes, radians; 0 points along +x (toward the enemy). */
+  heading: number;
+  /** Screen-space facing: +1 to the iso-right, -1 to the iso-left. */
+  facing: 1 | -1;
+  /** 0..1 through the current stride, advanced by distance travelled. */
+  stride: number;
+  /** Distance travelled since spawning, for the walk cycle's phase. */
+  marched: number;
   hp: number;
   maxHp: number;
   /** Seconds until the next shot. */
   cooldown: number;
-  /** `hold` = stopped on its line without a target in range (dug in). */
-  state: 'advance' | 'hold' | 'engage';
+  state: UnitState;
   /** Muzzle flash timer, seconds remaining. */
   flash: number;
   /** Recoil offset 0..1, decays — the barrel kicks back when it fires. */
@@ -60,59 +77,98 @@ export interface Unit {
   trenchCover: boolean;
   /** Spawn scale-in animation, 0..1. */
   spawn: number;
-  /** Facing: +1 toward the enemy base for the player, -1 for the enemy. */
-  facing: 1 | -1;
   /** Enemy unit HP is scaled by the campaign tier. */
   hpScale: number;
+  /** The hostile position this unit is attacking. */
+  targetBaseId: number;
+  /** The friendly position it launched from. */
+  homeBaseId: number;
+  /** True once it has been re-tasked after its objective fell. */
+  retargeted: boolean;
 }
 
 export interface BaseState {
+  id: number;
   side: Side;
+  /** Display letter within its own side: A..E. */
+  letter: string;
+  /** Name shown on the field and in the splash breakdown. */
+  name: string;
+  kind: BaseKind;
+  /** Ground-plane position of the position's centre. */
+  x: number;
+  y: number;
   hp: number;
   maxHp: number;
+  /**
+   * Seconds until this position may launch again. **Per base**: the v2 pacing
+   * rule, which is what lets several positions press at once.
+   */
+  cooldown: number;
+  /** What launched last, so the HUD can say what the wait is for. */
+  pendingKind: UnitKind | null;
   /** Muzzle flash of the base's own defensive gun, seconds remaining. */
   flash: number;
   /** Reload timer of that gun. */
-  cooldown: number;
+  gunCooldown: number;
+  /** Where the defensive gun is currently laid, radians (world axes). */
+  aim: number;
   /** Smoke intensity 0..1, grows as the base takes damage. */
   smoke: number;
   /** Seconds remaining on the "just hit" flinch. */
   hit: number;
+  destroyed: boolean;
 }
 
 export interface Projectile {
   x: number;
   y: number;
+  /** Height above the ground plane, world units. */
+  z: number;
   vx: number;
   vy: number;
+  vz: number;
   damage: number;
   kind: 'bullet' | 'shell';
   side: Side;
   life: number;
   /** Movement slow applied to whatever this round hits (MG fire). */
   suppress: number;
-  /** Blast radius for shells, px. */
+  /** Blast radius for shells, world units. */
   blast: number;
 }
 
-export type ParticleKind = 'spark' | 'dust' | 'smoke' | 'casing' | 'debris' | 'blood' | 'bond';
+export type ParticleKind =
+  | 'spark'
+  | 'dust'
+  | 'smoke'
+  | 'casing'
+  | 'debris'
+  | 'blood'
+  | 'bond'
+  /** The detonation flash itself: a short, bright, expanding core + ring. */
+  | 'flash';
 
 export interface Particle {
   x: number;
   y: number;
+  z: number;
   vx: number;
   vy: number;
+  vz: number;
   life: number;
   maxLife: number;
   size: number;
   kind: ParticleKind;
   /** Casings and debris spin as they fall. */
   spin: number;
+  spinRate: number;
 }
 
 /** A corpse fading out where a unit fell. */
 export interface Corpse {
   x: number;
+  y: number;
   kind: UnitKind;
   side: Side;
   facing: 1 | -1;
@@ -120,16 +176,12 @@ export interface Corpse {
   maxLife: number;
   /** Direction the body toppled in, so it falls away from the impact. */
   topple: 1 | -1;
-  /** Helmet launched off on impact (drawn as its own little arc). */
-  helmetX: number;
-  helmetY: number;
-  helmetVx: number;
-  helmetVy: number;
 }
 
 /** Sandbags left behind by a dug-in MG, kept as scenery once it advances. */
 export interface Sandbags {
   x: number;
+  y: number;
   side: Side;
 }
 
@@ -146,25 +198,55 @@ export interface MatchStats {
   suppliesGenerated: number;
   /** Logistics upgrades bought in-match. */
   logisticsBought: number;
-  /** Damage dealt to the enemy strongpoint. */
+  /** Damage dealt to enemy positions. */
   baseDamage: number;
   /** Buried mines the player's units set off. */
   minesHit: number;
   /** Mines the enemy's units set off. */
   enemyMinesHit: number;
+  /** Enemy positions razed. */
+  basesDestroyed: number;
+  /** Friendly positions lost. */
+  basesLost: number;
+  /** Launches from player positions. */
+  launches: number;
+  /** Times a unit was re-tasked because its objective had fallen. */
+  retargets: number;
 }
 
 export interface DeployOption {
   readonly kind: UnitKind;
   readonly name: string;
-  /** Seconds until this type can be deployed again (0 when ready). */
-  readonly cooldown: number;
-  /** Full length of that cooldown, for drawing the sweep. */
-  readonly cooldownTotal: number;
   readonly cost: number;
   readonly affordable: boolean;
-  /** True when the deployment bar slot is shown as available. */
+  /** True when the selected position is ready, off cooldown and not capped. */
   readonly ready: boolean;
+  /** Seconds the base would still wait after launching (0 when ready now). */
+  readonly launchCooldown: number;
+  /** Full length of that cooldown, for drawing the sweep. */
+  readonly cooldownTotal: number;
+}
+
+/** One launch pad, as the HUD needs to show it. */
+export interface BaseOption {
+  readonly id: number;
+  readonly letter: string;
+  readonly name: string;
+  readonly kind: BaseKind;
+  readonly hp: number;
+  readonly maxHp: number;
+  readonly hpFraction: number;
+  readonly destroyed: boolean;
+  /** True when this position may launch immediately. */
+  readonly ready: boolean;
+  /** Seconds until it may launch again. */
+  readonly cooldown: number;
+  /** Seconds it will wait after a launch of the cheapest kind. */
+  readonly cooldownTotal: number;
+  /** How many units it has in the field right now. */
+  readonly units: number;
+  /** Distance to the position it is currently aimed at, world units. */
+  readonly distance: number;
 }
 
 export interface MatchConfig {
@@ -173,7 +255,7 @@ export interface MatchConfig {
   readonly year: string;
   readonly theater: string;
   readonly tier: number;
-  /** Name shown on the enemy strongpoint (from the campaign database). */
+  /** Name shown on the enemy positions (from the campaign database). */
   readonly strongpoint: string;
   readonly faction: Faction;
   readonly enemyFaction: Faction;
@@ -185,21 +267,33 @@ export interface MatchConfig {
   readonly features: readonly BattlefieldFeature[];
   /** The stage's own multiplier on the player's supply generation. */
   readonly supplyRateMultiplier: number;
-  readonly playerBaseHp: number;
-  readonly enemyBaseHp: number;
   readonly startSupplies: number;
   readonly supplyBaseRate: number;
   readonly enemySupplyRate: number;
-  /** Seconds between enemy deployments (shorter when it is the attacker). */
+  /** Seconds between launches from one enemy position. */
   readonly enemyDeployInterval: number;
   /** Multipliers from campaign upgrades. */
   readonly damageMultiplier: number;
-  /** Multiplier on every player unit's hit points, from the armory. */
+  /** Multiplier on every player unit's hit points, from the armoury. */
   readonly unitHpMultiplier: number;
   /** Unit kinds the enemy is allowed to field, with weights. */
   readonly enemyMix: readonly { readonly kind: UnitKind; readonly weight: number }[];
+  /** Every position on the field, both sides, laid out deterministically. */
+  readonly bases: readonly BasePlan[];
   /** Seed for the enemy AI's jitter, derived from the node id. */
   readonly seed: number;
+}
+
+/** A position that exists before the battle starts. */
+export interface BasePlan {
+  readonly id: number;
+  readonly side: Side;
+  readonly letter: string;
+  readonly name: string;
+  readonly kind: BaseKind;
+  readonly x: number;
+  readonly y: number;
+  readonly hp: number;
 }
 
 export interface TugState {
@@ -214,8 +308,10 @@ export interface TugState {
   readonly enemyFaction: Faction;
   /** Campaign tier: drives late-war kit, such as the M1 helmet. */
   readonly tier: number;
-  /** Searchlight beam centres, empty unless it is a night battle. */
-  readonly searchlights: readonly number[];
+  /** Deterministic layout seed, for the renderer's scatter passes. */
+  readonly seed: number;
+  /** Searchlight beam centres on the ground plane. */
+  readonly searchlights: readonly { readonly x: number; readonly y: number }[];
   /** Static terrain on the field, with live damage/occupancy state. */
   readonly features: FeatureLayout;
   readonly supplies: number;
@@ -223,8 +319,8 @@ export interface TugState {
   readonly bonds: number;
   readonly logisticsLevel: number;
   readonly logisticsCost: number;
-  readonly playerBase: BaseState;
-  readonly enemyBase: BaseState;
+  /** Every position on the field: friendly first, then hostile. */
+  readonly bases: readonly BaseState[];
   readonly units: readonly Unit[];
   readonly corpses: readonly Corpse[];
   readonly sandbags: readonly Sandbags[];
@@ -232,15 +328,26 @@ export interface TugState {
   readonly particles: readonly Particle[];
   /** Current screen-shake amplitude in px; the renderer applies it. */
   readonly shake: number;
-  /** Parallax focus: the average x of engaged units, or the midpoint. */
+  /** Where the action is, on the ground plane: the camera frames this. */
   readonly focusX: number;
+  readonly focusY: number;
   readonly stats: MatchStats;
+  /** Launch options for the player's currently selected position. */
   readonly deployOptions: readonly DeployOption[];
+  /** One entry per friendly position, for the HUD's launch-pad row. */
+  readonly playerBaseOptions: readonly BaseOption[];
+  /** One entry per hostile position, for the HUD's objective row. */
+  readonly enemyBaseOptions: readonly BaseOption[];
   /** Enemy supply readout for the HUD (approximate, for tension). */
   readonly enemySupplies: number;
   readonly enemyUnits: number;
   /** Live player units on the field (for the cap indicator). */
   readonly playerUnits: number;
+  /** Surviving positions, and the total that set out. */
+  readonly playerBasesAlive: number;
+  readonly playerBasesTotal: number;
+  readonly enemyBasesAlive: number;
+  readonly enemyBasesTotal: number;
 }
 
 export type SimEventType =
@@ -254,6 +361,7 @@ export type SimEventType =
   | 'playerUnitDown'
   | 'baseHit'
   | 'baseDestroyed'
+  | 'retarget'
   | 'mineBlast'
   | 'trenchOverrun'
   | 'logisticsUpgrade'
@@ -267,10 +375,16 @@ export interface SimEvent {
   readonly kind?: UnitKind;
   /** True when the hit landed on armour — the audio layer turns it into a ping. */
   readonly metal?: boolean;
+  /** Which side the event belongs to, where that matters. */
+  readonly side?: Side;
 }
 
 /** One frame of player intent, produced by the input layer. */
 export interface MatchCommand {
   readonly deploy: UnitKind | null;
+  /** Launch pad to send from; `null` = the one nearest the objective. */
+  readonly fromBaseId: number | null;
+  /** Hostile position to attack; `null` = nearest to the launch pad. */
+  readonly targetBaseId: number | null;
   readonly buyLogistics: boolean;
 }

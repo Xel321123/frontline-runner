@@ -26,10 +26,9 @@ import {
 } from '../core/progression';
 import { THEATERS } from '../data/campaignData';
 import { environmentRules } from '../game/environment';
-import { effectiveSupplyRate } from '../game/match';
+import { effectiveSupplyRate, positionCountFor } from '../game/match';
 import { featureLabel, missionDetail, missionLabel, stageTagline } from '../game/stageInfo';
 import { UNIT_ORDER, UNIT_STATS } from '../game/units';
-import type { BattleOutcome } from './Match';
 import { escapeHtml, fine, formatNumber } from './dom';
 
 /**
@@ -98,10 +97,11 @@ export function titleScreenHtml(save: SaveData): string {
     <section class="screen screen--title">
       <div class="screen-head">
         <h2>The 1940-45 front</h2>
-        <p class="lede">Pick a side to open its campaign map. Battles are won by
-        breaking the enemy strongpoint with waves of infantry and armour — every
-        unit is drawn from scratch, and the whole game runs from the local save
-        file with no network calls.</p>
+        <p class="lede">Pick a side to open its campaign map. Battles are fought in
+        isometric on a real field of ground: each side holds up to five positions,
+        you choose which one to launch from and which one to take, and every
+        structure, figure and tree is drawn from SVG vector paths — all offline,
+        from the local save file.</p>
       </div>
       <div class="cards">${cards}</div>
       <div class="screen-actions">
@@ -226,11 +226,17 @@ export function briefingHtml(stage: StageDefinition, save: SaveData): string {
 
   const rules = environmentRules(stage.environment);
   const supplyRate = effectiveSupplyRate(stage).toFixed(1);
+  const playerPositions = positionCountFor('player', stage.tier, stage.missionType);
+  const enemyPositions = positionCountFor('enemy', stage.tier, stage.missionType);
   const rows: (readonly [string, string])[] = [
     ['theatre', `${stage.theater} · ${stage.year}`],
     ['grid', `x ${stage.coords.x}% · y ${stage.coords.y}%`],
     ['mission', `${missionLabel(stage.missionType)} — ${missionDetail(stage.missionType)}`],
     ['strongpoint', stage.bossName],
+    [
+      'positions',
+      `you hold ${playerPositions} · the enemy holds ${enemyPositions} — take them all`,
+    ],
     [
       'conditions',
       stage.environment === 'standard' ? rules.label : `${rules.label} — ${rules.summary}`,
@@ -272,9 +278,11 @@ export function briefingHtml(stage: StageDefinition, save: SaveData): string {
         )
         .join('')}
     </dl>
-    <p class="fine">Command your line from the deployment bar: supplies arrive
+    <p class="fine">Command your line from the deployment bar: pick a position to
+    launch from and a position to take, then field troops. Supplies arrive
     continuously (${supplyRate}/s here, before logistics upgrades), and bonds
-    dropped by destroyed enemy units buy those upgrades mid-battle.</p>
+    dropped by destroyed enemy units buy those upgrades mid-battle. Every
+    position keeps its own launch timer, so several can press at once.</p>
     ${
       locked
         ? fine('This sector is not open yet — clear the preceding node first.')
@@ -304,7 +312,10 @@ export interface CampView {
   readonly startSupplies: number;
   /** Supplies per second this sector actually pays. */
   readonly supplyRate: number;
+  /** Total hit points across every friendly position in this sector. */
   readonly baseHp: number;
+  /** Positions each side holds here, e.g. `you hold 3 · the enemy holds 3`. */
+  readonly positions: string;
   /** Multiplier the armory's Damage track applies to every unit. */
   readonly damageMultiplier: number;
   /** Multiplier the armory's Unit Health track applies to every unit. */
@@ -381,13 +392,14 @@ export function campHtml(save: SaveData, view: CampView): string {
         <ul class="loadout">
           <li><span>supplies at deploy</span><b>${formatNumber(view.startSupplies)}</b></li>
           <li><span>supply rate here</span><b>${view.supplyRate.toFixed(1)}/s</b></li>
-          <li><span>base hit points</span><b>${formatNumber(view.baseHp)}</b></li>
+          <li><span>positions in this sector</span><b>${escapeHtml(view.positions)}</b></li>
+          <li><span>total position hit points</span><b>${formatNumber(view.baseHp)}</b></li>
           <li><span>unit damage</span><b>×${view.damageMultiplier.toFixed(2)}</b></li>
           <li><span>unit hit points</span><b>×${view.unitHpMultiplier.toFixed(2)}</b></li>
         </ul>
         <ul class="unit-list">${roster}</ul>
-        <p class="fine">Every figure on the field is drawn procedurally — no sprite
-        sheets, no downloads.</p>
+        <p class="fine">Every structure, figure and tree on the field is drawn from
+        SVG vector paths at runtime — no sprite sheets, no downloads.</p>
       </section>
       <section class="camp-block">
         <h3>Upgrades</h3>
@@ -404,78 +416,11 @@ export function campHtml(save: SaveData, view: CampView): string {
 
 // -------------------------------------------------------------------- result
 
-export function resultHtml(
-  outcome: BattleOutcome,
-  save: SaveData,
-  nextStage?: StageDefinition,
-): string {
-  const won = outcome.status === 'victory';
-  // Never claim a strongpoint was destroyed when it was the clock that decided
-  // the sector — the remaining-strength figures below tell the real story.
-  const title = won
-    ? outcome.lossReason === 'time-expired'
-      ? 'Sector secured'
-      : 'Strongpoint destroyed'
-    : outcome.lossReason === 'time-expired'
-      ? 'Time expired'
-      : 'Base overrun';
-
-  const unlocked = outcome.unlockedStage ? (nextStage ?? null) : null;
-  const minutes = Math.floor(outcome.durationSeconds / 60);
-  const seconds = Math.floor(outcome.durationSeconds % 60);
-
-  return `
-    <div class="modal-head modal-head--${won ? 'win' : 'loss'}">
-      <span class="modal-kicker">${escapeHtml(outcome.nodeName)} · ${escapeHtml(
-        outcome.year,
-      )} · ${minutes}m ${String(seconds).padStart(2, '0')}s · ${escapeHtml(
-        outcome.situation,
-      )}</span>
-      <h2>${title}</h2>
-    </div>
-    <div class="result-grid">
-      <div class="result-stat"><span>war bonds awarded</span><b class="${
-        won ? 'pos' : ''
-      }">${won ? `+${formatNumber(outcome.bondsAwarded)}` : '0'}</b></div>
-      <div class="result-stat"><span>bonds from the field</span><b class="pos">+${formatNumber(
-        outcome.bondsCollected,
-      )}</b></div>
-      <div class="result-stat"><span>units deployed</span><b>${outcome.unitsDeployed}</b></div>
-      <div class="result-stat"><span>units lost</span><b class="neg">${formatNumber(
-        outcome.unitsLost,
-      )}</b></div>
-      <div class="result-stat"><span>enemy destroyed</span><b>${outcome.enemyDestroyed}</b></div>
-      <div class="result-stat"><span>logistics upgrades</span><b>${outcome.logisticsBought}</b></div>
-      <div class="result-stat"><span>your base</span><b>${formatNumber(
-        outcome.playerBaseRemaining,
-      )}/${formatNumber(outcome.playerBaseMax)}</b></div>
-      <div class="result-stat"><span>enemy strongpoint</span><b>${formatNumber(
-        outcome.enemyBaseRemaining,
-      )}/${formatNumber(outcome.enemyBaseMax)}</b></div>
-    </div>
-    ${
-      unlocked
-        ? `<p class="unlock-line">Unlocked: <b>${escapeHtml(unlocked.name)}</b> (${escapeHtml(
-            unlocked.year,
-          )}) — ${escapeHtml(unlocked.bossName)}</p>`
-        : fine(
-            won
-              ? 'That was the last node in this campaign.'
-              : 'The sector stays open, and the bonds you collected are banked — spend them at camp and try again.',
-          )
-    }
-    <div class="modal-actions">
-      ${
-        won && unlocked
-          ? `<button type="button" class="btn btn--primary" data-action="deploy-stage" data-stage="${unlocked.id}">▶ next sector</button>`
-          : `<button type="button" class="btn btn--primary" data-action="deploy-stage" data-stage="${outcome.nodeId}">↻ retry sector</button>`
-      }
-      <button type="button" class="btn" data-action="open-camp">⚑ camp (${formatNumber(
-        save.warBonds,
-      )} bonds)</button>
-      <button type="button" class="btn btn--ghost" data-action="close-modal">map</button>
-    </div>`;
-}
+/**
+ * The end-of-battle report is no longer a modal: it is a full-screen splash
+ * (see `app/splash.ts`), which is what removed the need to press Abort to see
+ * how a sector went.
+ */
 
 // --------------------------------------------------------------- diagnostics
 
@@ -496,7 +441,8 @@ export function diagnosticsHtml(view: DiagnosticsView): string {
       }</b></li>
       <li><span>unit archetypes</span><b>${view.unitKinds}</b></li>
       <li><span>theatres in database</span><b>${view.theatreCount}</b></li>
-      <li><span>sprites or images loaded by the battlefield</span><b>0</b></li>
+      <li><span>sprite sheets or images the battlefield loads</span><b>0</b></li>
+      <li><span>isometric art source</span><b>SVG vector paths</b></li>
       <li><span>network calls needed to play</span><b>0</b></li>
     </ul>
     <div class="screen-actions">

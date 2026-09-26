@@ -1,9 +1,9 @@
 {
   "name": "frontline-runner",
   "private": true,
-  "version": "1.4.0",
+  "version": "2.0.0",
   "type": "module",
-  "description": "Frontline Runner — an offline-first landscape tug-of-war battlefield (Vite + TypeScript + Canvas 2D, 100% procedural graphics), portable to iOS/Android via Capacitor.",
+  "description": "Frontline Runner — an offline-first isometric battlefield (Age of Empires style) with 1-5 bases per side, SVG vector artwork and a fully procedural Canvas 2D renderer, portable to iOS/Android via Capacitor.",
   "engines": {
     "node": ">=20"
   },

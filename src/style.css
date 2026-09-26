@@ -1276,3 +1276,226 @@ main {
     display: none !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   v2 — isometric battlefield: launch-pad and objective rows, the note line, and
+   the end-of-battle splash layer.
+
+   The two chip rows are the whole tactical layer of a multi-position battle, so
+   they sit directly above the deployment cards: pick where to launch from, pick
+   what to take, then field troops. On a short landscape phone the position names
+   are dropped to keep the rows from eating the battlefield.
+   --------------------------------------------------------------------------- */
+
+#hud-orders {
+  position: absolute;
+  bottom: 104px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 96vw;
+  z-index: 10000;
+  font-family: var(--mono);
+  pointer-events: none;
+}
+
+#hud-orders .hud-order-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#hud-orders .hud-order-label {
+  flex: none;
+  width: 62px;
+  text-align: right;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(230, 236, 221, 0.62);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+#hud-orders .hud-chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  pointer-events: auto;
+  scrollbar-width: none;
+}
+
+#hud-orders .hud-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.chip-base {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 4px;
+  border: 1.5px solid rgba(255, 255, 255, 0.22);
+  border-radius: 9px;
+  background: rgba(10, 14, 11, 0.72);
+  color: #eef3ea;
+  font: 700 10px var(--mono);
+  white-space: nowrap;
+  cursor: pointer;
+  backdrop-filter: blur(3px);
+  transition: border-color 120ms ease, transform 80ms ease;
+}
+
+.chip-base:active {
+  transform: scale(0.97);
+}
+
+.chip-base canvas {
+  display: block;
+  width: 40px;
+  height: 32px;
+}
+
+.chip-base .chip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 58px;
+}
+
+.chip-base .chip-top {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.chip-base .chip-letter {
+  font-size: 11px;
+  color: var(--gold);
+}
+
+.chip-base .chip-name {
+  max-width: 92px;
+  overflow: hidden;
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.chip-base .chip-hp {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+.chip-base .chip-hp i {
+  display: block;
+  height: 100%;
+  background: var(--green);
+}
+
+.chip-base .chip-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-size: 9px;
+  opacity: 0.85;
+}
+
+.chip-base .chip-units {
+  font-size: 8px;
+  opacity: 0.7;
+}
+
+.chip-base.is-ready .chip-wait {
+  color: var(--green);
+}
+
+.chip-base.is-selected {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(232, 193, 90, 0.32) inset;
+}
+
+.chip-base.is-destroyed {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.chip-base.is-destroyed .chip-hp i {
+  background: var(--red);
+}
+
+#hud-top .hud-note {
+  margin-top: 2px;
+  font-size: 10px;
+  color: rgba(230, 236, 221, 0.78);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+/* The splash has to sit above the battle HUD (z-index 10000) and above the
+   canvas, while leaving the frozen battlefield visible behind it. */
+#splash-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 20000;
+}
+
+#splash-layer[hidden] {
+  display: none;
+}
+
+@media (max-height: 520px) {
+  .chip-base .chip-name,
+  .chip-base .chip-units {
+    display: none;
+  }
+
+  .chip-base canvas {
+    width: 30px;
+    height: 24px;
+  }
+
+  #hud-orders {
+    bottom: 92px;
+  }
+}
+
+/* Which row a chip belongs to, so "launch from" and "attack" are tellable apart
+   at a glance even before the selection highlight lands on them. */
+.chip-base--from {
+  border-left-color: rgba(143, 191, 98, 0.85);
+}
+
+.chip-base--to {
+  border-left-color: rgba(217, 112, 95, 0.85);
+}
+/* The middle HUD column must never be squeezed to nothing by the two side
+   blocks, and the status line is a one-line readout: wrapping it into a five-line
+   paragraph was what made the top of the screen unreadable on a phone. */
+#hud-top .hud-mid {
+  min-width: 190px;
+}
+
+#hud-top .hud-note {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 720px) {
+  #hud-top .hud-side {
+    min-width: 96px;
+  }
+
+  #hud-top .hud-mid {
+    min-width: 140px;
+  }
+}

@@ -1,28 +1,45 @@
 /**
- * Camera — world → screen mapping for a full-bleed viewport.
+ * Camera — world plane → viewport mapping for the isometric view.
  *
  * Two rules define the whole model:
  *
  *  1. NO LETTERBOXING. The camera never draws into a fixed sub-rectangle; it
- *     spans 100% of the viewport at every aspect ratio, cropping rather than
- *     barring.
- *  2. The ground line is anchored `GROUND_MARGIN` px above the bottom edge, so
- *     the deployment bar sits on real ground and the sky does not dominate.
+ *     spans 100% of the viewport at every aspect ratio, cropping ground rather
+ *     than barring. Whatever is outside the ground plane is painted as the
+ *     environment's surround, so there is never a black bar to look at.
+ *  2. Zoom 1 fits the *playable* field (see `iso.fitScale`), not the whole
+ *     diamond of the plane. The corners of an isometric field are empty ground,
+ *     so fitting them instead would shrink every soldier for nothing.
  *
- * `zoom` is a plain multiplier on the fit scale (CSS px per world px), so
- * zoom = 1 shows the whole battlefield — HQ near the left edge, strongpoint
- * near the right — and larger values push in for close action.
+ * `focus` is a point on the **ground plane**; the projection itself lives in
+ * `src/render/iso/iso.ts` so the camera, the artwork and the pointer hit-tests
+ * all agree on it.
  */
 
-import { GROUND_Y, VIEW_HEIGHT, VIEW_WIDTH } from '../game/constants';
+import {
+  ISO_Y_SCALE,
+  fitScale,
+  isoPoint,
+  isoUnproject,
+  type Point,
+} from '../render/iso/iso';
+import {
+  CAMERA_DEFAULT_ZOOM_FACTOR,
+  CAMERA_MAX_ZOOM_FACTOR,
+  CAMERA_MIN_ZOOM_FACTOR,
+  CAMERA_ZOOM_IN_FACTOR,
+  WORLD_H,
+  WORLD_W,
+} from '../game/constants';
 
-/** Distance from the ground line to the bottom of the viewport, in CSS px. */
-export const GROUND_MARGIN = 120;
-export const MIN_ZOOM_FACTOR = 1;
-export const MAX_ZOOM_FACTOR = 2.2;
-export const DEFAULT_ZOOM_FACTOR = 1;
+export const DEFAULT_ZOOM_FACTOR = CAMERA_DEFAULT_ZOOM_FACTOR;
+export const MIN_ZOOM_FACTOR = CAMERA_MIN_ZOOM_FACTOR;
+export const MAX_ZOOM_FACTOR = CAMERA_MAX_ZOOM_FACTOR;
 /** Opt-in close-action zoom (the HUD button toggles between the two). */
-export const ZOOM_IN_FACTOR = 1.7;
+export const ZOOM_IN_FACTOR = CAMERA_ZOOM_IN_FACTOR;
+
+/** How far past the plane's edge the camera may be pushed, world units. */
+const OVERSCROLL = 60;
 
 export interface Camera {
   /** Viewport size in CSS pixels. */
@@ -30,90 +47,130 @@ export interface Camera {
   readonly cssHeight: number;
   /** CSS pixels per world unit. */
   readonly zoom: number;
-  /** World point at the centre of the viewport. */
+  /** Ground-plane point at the centre of the viewport. */
   readonly focusX: number;
   readonly focusY: number;
-}
-
-/** Whole battlefield visible: the scale that fits the world width exactly. */
-export function fitScale(cssWidth: number): number {
-  return Math.max(0.05, cssWidth / VIEW_WIDTH);
-}
-
-/** World point that sits at the viewport centre when the ground is anchored. */
-function focusYFor(cssHeight: number, zoom: number): number {
-  return GROUND_Y - (cssHeight / 2 - GROUND_MARGIN) / zoom;
+  /** The focus point in projected px — cached because every draw needs it. */
+  readonly focusProjectedX: number;
+  readonly focusProjectedY: number;
 }
 
 export function clampZoomFactor(factor: number): number {
   return Math.min(MAX_ZOOM_FACTOR, Math.max(MIN_ZOOM_FACTOR, factor));
 }
 
-export function createCamera(cssWidth: number, cssHeight: number): Camera {
-  const zoom = fitScale(cssWidth);
-  return {
-    cssWidth: Math.max(1, cssWidth),
-    cssHeight: Math.max(1, cssHeight),
-    zoom,
-    focusX: VIEW_WIDTH / 2,
-    focusY: focusYFor(cssHeight, zoom),
-  };
+/** Scale that fits the playable field into this viewport, in CSS px per unit. */
+export function baseScale(cssWidth: number, cssHeight: number): number {
+  return fitScale(cssWidth, cssHeight);
 }
 
-/** World half-width visible at a given zoom. */
-export function visibleWorldWidth(camera: Camera): number {
-  return camera.cssWidth / camera.zoom;
-}
-
-export function visibleWorldHeight(camera: Camera): number {
-  return camera.cssHeight / camera.zoom;
-}
-
-/**
- * Re-derive a camera for a new viewport / focus / zoom. Focus is clamped so the
- * view never leaves the battlefield horizontally, and the ground stays anchored.
- */
-export function cameraAt(
-  cssWidth: number,
-  cssHeight: number,
-  desiredFocusX: number,
-  zoomFactor: number = DEFAULT_ZOOM_FACTOR,
-): Camera {
-  const zoom = fitScale(cssWidth) * clampZoomFactor(zoomFactor);
-  const half = cssWidth / (2 * zoom);
-  const minFocus = Math.min(half, VIEW_WIDTH / 2);
-  const maxFocus = Math.max(VIEW_WIDTH - half, VIEW_WIDTH / 2);
-  const focusX = Math.min(maxFocus, Math.max(minFocus, desiredFocusX));
+function makeCamera(cssWidth: number, cssHeight: number, zoom: number, focusX: number, focusY: number): Camera {
+  const projected = isoPoint(focusX, focusY);
   return {
     cssWidth: Math.max(1, cssWidth),
     cssHeight: Math.max(1, cssHeight),
     zoom,
     focusX,
-    focusY: focusYFor(cssHeight, zoom),
+    focusY,
+    focusProjectedX: projected.x,
+    focusProjectedY: projected.y,
   };
 }
 
-export function worldToScreen(camera: Camera, x: number, y: number): { x: number; y: number } {
+/** A camera at zoom 1, framing the centre of the field. */
+export function createCamera(cssWidth: number, cssHeight: number): Camera {
+  return makeCamera(
+    cssWidth,
+    cssHeight,
+    baseScale(cssWidth, cssHeight),
+    WORLD_W / 2,
+    WORLD_H / 2,
+  );
+}
+
+/**
+ * Re-derive a camera for a viewport, focus and zoom factor. The focus is
+ * clamped so the view cannot be pushed far off the plane: the isometric plane is
+ * a diamond, so a little overscroll past an edge is normal, but flying into the
+ * void is not.
+ */
+export function cameraAt(
+  cssWidth: number,
+  cssHeight: number,
+  desiredFocusX: number,
+  desiredFocusY: number,
+  zoomFactor: number = DEFAULT_ZOOM_FACTOR,
+): Camera {
+  const zoom = baseScale(cssWidth, cssHeight) * clampZoomFactor(zoomFactor);
+  const focusX = Math.min(WORLD_W + OVERSCROLL, Math.max(-OVERSCROLL, desiredFocusX));
+  const focusY = Math.min(WORLD_H + OVERSCROLL, Math.max(-OVERSCROLL, desiredFocusY));
+  return makeCamera(cssWidth, cssHeight, zoom, focusX, focusY);
+}
+
+/**
+ * World plane → viewport. `z` lifts the point off the ground (muzzle height,
+ * a lobbed shell, debris in flight) and is scaled with everything else, which is
+ * what keeps a vertical offset consistent as the player zooms.
+ */
+export function worldToScreen(camera: Camera, x: number, y: number, z = 0): Point {
+  const projected = isoPoint(x, y);
   return {
-    x: camera.cssWidth / 2 + (x - camera.focusX) * camera.zoom,
-    y: camera.cssHeight / 2 + (y - camera.focusY) * camera.zoom,
+    x: camera.cssWidth / 2 + (projected.x - camera.focusProjectedX) * camera.zoom,
+    y: camera.cssHeight / 2 + (projected.y - camera.focusProjectedY) * camera.zoom - z * camera.zoom,
   };
 }
 
-export function screenToWorld(camera: Camera, x: number, y: number): { x: number; y: number } {
+/** Viewport → world plane (points on the ground; `z` is not recoverable). */
+export function screenToWorld(camera: Camera, screenX: number, screenY: number): Point {
+  const projectedX = (screenX - camera.cssWidth / 2) / camera.zoom + camera.focusProjectedX;
+  const projectedY = (screenY - camera.cssHeight / 2) / camera.zoom + camera.focusProjectedY;
+  return isoUnproject(projectedX, projectedY);
+}
+
+/** Projected px size of one world unit at this camera. */
+export function scaleOf(camera: Camera): number {
+  return camera.zoom;
+}
+
+/**
+ * The world-plane rectangle the viewport can see, expanded a little so art with
+ * a footprint larger than a point is not popped off at the edges. The projection
+ * is affine, so unprojecting the four viewport corners gives the exact bounds.
+ */
+export function visibleWorldRect(camera: Camera): {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+} {
+  const corners = [
+    screenToWorld(camera, 0, 0),
+    screenToWorld(camera, camera.cssWidth, 0),
+    screenToWorld(camera, 0, camera.cssHeight),
+    screenToWorld(camera, camera.cssWidth, camera.cssHeight),
+  ];
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const corner of corners) {
+    minX = Math.min(minX, corner.x);
+    maxX = Math.max(maxX, corner.x);
+    minY = Math.min(minY, corner.y);
+    maxY = Math.max(maxY, corner.y);
+  }
+  const margin = 80;
+  return { minX: minX - margin, maxX: maxX + margin, minY: minY - margin, maxY: maxY + margin };
+}
+
+/**
+ * Ground-plane size of the viewport, used by the HUD hit tests and by the
+ * renderer's coarse culling (props and tiles that cannot be visible are skipped
+ * before they cost a path).
+ */
+export function visibleWorldSize(camera: Camera): { width: number; height: number } {
   return {
-    x: camera.focusX + (x - camera.cssWidth / 2) / camera.zoom,
-    y: camera.focusY + (y - camera.cssHeight / 2) / camera.zoom,
+    width: camera.cssWidth / camera.zoom,
+    height: (camera.cssHeight / camera.zoom) / ISO_Y_SCALE,
   };
-}
-
-/** Vertical world bounds visible on screen, for the terrain painters. */
-export function visibleWorldRange(camera: Camera): { top: number; bottom: number } {
-  const half = visibleWorldHeight(camera) / 2;
-  return { top: camera.focusY - half, bottom: camera.focusY + half };
-}
-
-/** Sanity helper used by the tests: the world height at this zoom. */
-export function worldHeightOnScreen(camera: Camera): number {
-  return VIEW_HEIGHT * camera.zoom;
 }

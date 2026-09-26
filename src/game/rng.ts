@@ -17,6 +17,8 @@ export interface Rng {
   chance(p: number): boolean;
   /** Uniform pick from a non-empty list. */
   pick<T>(items: readonly T[]): T;
+  /** Fisher-Yates copy — shuffles a list without mutating the argument. */
+  shuffle<T>(items: readonly T[]): T[];
   /** Weighted pick; weights must be non-negative and sum > 0. */
   weighted<T>(entries: readonly { readonly value: T; readonly weight: number }[]): T;
 }
@@ -58,6 +60,17 @@ export function createRng(seed: number | string): Rng {
       if (items.length === 0) throw new Error('pick() from an empty list');
       const index = Math.floor(next() * items.length);
       return items[Math.min(index, items.length - 1)] as (typeof items)[number];
+    },
+    shuffle: (items) => {
+      const copy = [...items];
+      for (let i = copy.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(next() * (i + 1));
+        const a = copy[i] as (typeof copy)[number];
+        const b = copy[j] as (typeof copy)[number];
+        copy[i] = b;
+        copy[j] = a;
+      }
+      return copy;
     },
     weighted: (entries) => {
       const total = entries.reduce((sum, entry) => sum + Math.max(0, entry.weight), 0);
