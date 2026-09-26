@@ -134,6 +134,16 @@ its fate, every friendly position and its fate, each with its remaining strength
 From there the player goes straight on to the next sector, retries, opens the
 camp, or returns to the map, and the battlefield stays frozen on screen behind it.
 
+The old **Abort** button is gone. It existed only because there was no other way
+to end a level, and the splash has taken that job. The one control that remains
+is a subdued **⚐ withdraw**: it resolves the sector there and then and hands the
+outcome to the same splash (reading *you pulled out with N of M positions still
+standing*), so leaving a lost battle early still produces a report instead of
+dropping you on the map with nothing to read. It needs two presses inside four
+seconds — the first arms it and it reads `sure?` — so it cannot be triggered by a
+stray tap at the edge of the HUD. `Escape` during a battle follows the same
+two-press path.
+
 ## Screens
 
 | Screen | What it does |

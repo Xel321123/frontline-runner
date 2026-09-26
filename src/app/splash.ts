@@ -220,11 +220,19 @@ export function splashHtml(outcome: BattleOutcome, view: SplashView): string {
       ? 'Position lost'
       : 'Push repulsed';
 
+  // A deliberate withdrawal is a defeat by choice, so it gets its own wording
+  // rather than reading as if the clock beat the attack.
+  const withdrawn = outcome.status !== 'victory' && outcome.lossReason === 'withdrawn';
+
   const heroNote = won
     ? allEnemyRazed
       ? `All ${plural(outcome.enemyBases, 'enemy position')} razed.`
       : `${outcome.enemyBasesDestroyed} of ${outcome.enemyBases} enemy positions razed before the clock ran out — the ground is yours.`
-    : allFriendliesLost
+    : withdrawn
+      ? `You pulled out with ${
+          outcome.playerBases - outcome.playerBasesLost
+        } of ${outcome.playerBases} positions still standing. Nothing was held.`
+      : allFriendliesLost
       ? `All ${plural(outcome.playerBases, 'friendly position')} lost and the line broken.`
       : `The clock beat the attack: ${outcome.playerBasesLost} of ${outcome.playerBases} positions lost, ${
           outcome.playerBases - outcome.playerBasesLost

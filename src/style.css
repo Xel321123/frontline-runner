@@ -1136,9 +1136,26 @@ main {
   border-color: rgba(240, 211, 138, 0.7);
 }
 
-#hud-top .hud-btn--abort {
+#hud-top .hud-btn--withdraw {
+  color: #ffe9c9;
+  border-color: rgba(226, 183, 110, 0.45);
+  opacity: 0.72;
+}
+
+#hud-top .hud-btn--withdraw:hover {
+  opacity: 1;
+}
+
+/* Armed: the button is waiting for its confirming second press. */
+#hud-top .hud-btn--withdraw.is-armed {
+  opacity: 1;
   color: #ffd9d2;
-  border-color: rgba(224, 122, 104, 0.6);
+  border-color: rgba(224, 122, 104, 0.85);
+  background: rgba(224, 122, 104, 0.22);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  min-width: 52px;
 }
 
 #hud-bottom {

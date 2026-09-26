@@ -34,7 +34,13 @@ export interface BattleHudCallbacks {
   readonly onSelectFrom: (baseId: number) => void;
   readonly onSelectTarget: (baseId: number) => void;
   readonly onLogistics: () => void;
-  readonly onAbort: () => void;
+  /**
+   * Withdraw from the sector. This is deliberately not an "abort": pressing it
+   * two ways ends the battle *through the normal resolution path*, so the
+   * splash reports the result instead of dropping the player back on the map
+   * with nothing to read.
+   */
+  readonly onWithdraw: () => void;
   readonly onPause: () => void;
   readonly onZoom: () => void;
   readonly onRecenter: () => void;
@@ -65,6 +71,8 @@ export interface BattleHud {
   update(state: TugState, fps: number, selection: HudSelection): void;
   setPaused(paused: boolean): void;
   setZoomed(zoomed: boolean): void;
+  /** Arms/disarms the withdraw button's two-press confirmation. */
+  setWithdrawArmed(armed: boolean): void;
   /** Brief message under the clock: what just happened, or what to do next. */
   say(message: string): void;
   dispose(): void;
@@ -124,7 +132,7 @@ export function createBattleHud(
   host.addEventListener('click', onClick);
 
   const buttons: readonly [string, () => void][] = [
-    ['[data-action="hud-abort"]', callbacks.onAbort],
+    ['[data-action="hud-withdraw"]', callbacks.onWithdraw],
     ['[data-action="hud-pause"]', callbacks.onPause],
     ['[data-action="hud-zoom"]', callbacks.onZoom],
     ['[data-action="hud-recenter"]', callbacks.onRecenter],
@@ -228,6 +236,12 @@ export function createBattleHud(
     },
     setZoomed(zoomed: boolean): void {
       el('#hud-zoom').classList.toggle('is-on', zoomed);
+    },
+    setWithdrawArmed(armed: boolean): void {
+      const button = el('#hud-withdraw');
+      button.classList.toggle('is-armed', armed);
+      button.textContent = armed ? 'sure?' : '⚐';
+      button.setAttribute('aria-label', armed ? 'Confirm withdraw' : 'Withdraw');
     },
     say(message: string): void {
       note.textContent = message;
@@ -403,7 +417,7 @@ function markup(info: BattleHudInfo): string {
         <button type="button" class="hud-btn" data-action="hud-zoom" title="Zoom">⤢</button>
         <button type="button" class="hud-btn" data-action="hud-recenter" title="Centre">◎</button>
         <button type="button" class="hud-btn" data-action="hud-pause" id="hud-pause" title="Pause">❚❚</button>
-        <button type="button" class="hud-btn hud-btn--abort" data-action="hud-abort" title="Abort">Abort</button>
+        <button type="button" class="hud-btn hud-btn--withdraw" id="hud-withdraw" data-action="hud-withdraw" title="Withdraw: end the battle and read the result" aria-label="Withdraw">⚐</button>
       </div>
     </div>
     <div id="hud-orders">

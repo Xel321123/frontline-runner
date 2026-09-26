@@ -8,7 +8,9 @@
  *
  * The splash is deliberately not a modal: when a sector resolves it covers the
  * whole viewport by itself and offers the next move, which is what removed the
- * old need to press Abort to find out how the battle went. The battlefield stays
+ * old need to press Abort to find out how the battle went — or to end it at all:
+ * the Abort control is gone, and a deliberate ⚐ withdraw resolves the sector
+ * through the splash. The battlefield stays
  * on screen behind it, frozen, so the player can see what they are leaving.
  *
  * Nothing here talks to the network: the save file is the only state, and the
@@ -67,7 +69,6 @@ const SHELL_HTML = `
       </span>
       <button type="button" class="chip" id="btn-sound" data-action="toggle-sound">sound</button>
       <button type="button" class="chip" id="btn-camp" data-action="open-camp">camp</button>
-      <button type="button" class="chip" id="btn-exit" data-action="exit-run" hidden>abort battle</button>
     </div>
   </header>
   <main>
@@ -101,7 +102,6 @@ export async function startShell(root: HTMLElement): Promise<void> {
   const bondEl = mustFind<HTMLElement>(root, '#bond-count');
   const soundEl = mustFind<HTMLButtonElement>(root, '#btn-sound');
   const barSubEl = mustFind<HTMLElement>(root, '#bar-sub');
-  const exitEl = mustFind<HTMLElement>(root, '#btn-exit');
 
   let modal: ModalState = { kind: null };
   let session: MatchSession | null = null;
@@ -238,7 +238,6 @@ export async function startShell(root: HTMLElement): Promise<void> {
     bondEl.textContent = String(save.warBonds);
     soundEl.textContent = save.settings.muted ? 'sound off' : 'sound on';
     soundEl.setAttribute('aria-pressed', String(!save.settings.muted));
-    show(exitEl, session !== null && splash === null);
 
     if (session) {
       barSubEl.textContent = splash ? 'sector resolved' : 'in the field';
@@ -307,7 +306,6 @@ export async function startShell(root: HTMLElement): Promise<void> {
       faction: save.faction,
       stage,
       handlers: {
-        onExit: () => exitBattle(),
         onFinish: (outcome: BattleOutcome) => {
           // The splash appears on its own: no abort, no modal to dismiss first.
           splash = outcome;
@@ -405,8 +403,16 @@ export async function startShell(root: HTMLElement): Promise<void> {
     void unlockAudio();
 
     // Any action taken from the splash ends the battle behind it first, so the
-    // next sector never starts on top of the previous one's canvas.
-    if (splash && action !== 'toggle-sound' && action !== 'toggle-diagnostics') {
+    // next sector never starts on top of the previous one's canvas. Actions
+    // raised by the battle's own controls are the exception: withdrawing is the
+    // very click that puts the splash up, and this handler sees that click again
+    // on the way back up the tree, now that the splash exists.
+    if (
+      splash &&
+      !playEl.contains(target) &&
+      action !== 'toggle-sound' &&
+      action !== 'toggle-diagnostics'
+    ) {
       splash = null;
       show(splashLayerEl, false);
       splashLayerEl.innerHTML = '';
@@ -439,9 +445,6 @@ export async function startShell(root: HTMLElement): Promise<void> {
         return;
       case 'deploy-stage':
         startBattle(getStage(target.dataset.stage ?? ''));
-        return;
-      case 'exit-run':
-        closeBattle();
         return;
       case 'toggle-sound': {
         const muted = sound.toggleMute();

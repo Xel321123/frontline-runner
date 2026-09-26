@@ -49,7 +49,11 @@ import type { StageDefinition } from '../core/progression';
 import type { Faction } from '../core/types';
 
 export interface MatchHandlers {
-  readonly onExit: () => void;
+  /**
+   * A battle ended and produced its report. There is deliberately no `onExit`:
+   * a battle can no longer be abandoned without a result, because the splash is
+   * how a level ends.
+   */
   readonly onFinish: (outcome: BattleOutcome) => void;
 }
 
@@ -73,6 +77,13 @@ const NO_COMMAND: MatchCommand = Object.freeze({
 const MAX_STEPS = 5;
 /** How close a tap must land to a position to select it, world units. */
 const TAP_RADIUS = BASE_FOOTPRINT * 1.9;
+
+/**
+ * How long the withdraw button stays armed after the first press. Two presses
+ * inside this window withdraw; outside it the first press merely arms, so a
+ * stray tap at the edge of the HUD cannot throw a battle away.
+ */
+const WITHDRAW_CONFIRM_MS = 4000;
 
 export interface MatchSession {
   readonly dispose: () => void;
@@ -129,6 +140,8 @@ export function createMatchSession(options: MatchOptions): MatchSession {
   let camera: Camera = createCamera(surface.width, surface.height);
   let finished = false;
   let outcome: BattleOutcome | null = null;
+  /** When the withdraw button was first pressed, for its two-press confirm. */
+  let withdrawArmedAt = 0;
 
   // --- selection ------------------------------------------------------------
   let selection: HudSelection = { fromBaseId: null, targetBaseId: null };
@@ -200,7 +213,7 @@ export function createMatchSession(options: MatchOptions): MatchSession {
     onLogistics: () => {
       issue({ ...NO_COMMAND, buyLogistics: true });
     },
-    onAbort: () => handlers.onExit(),
+    onWithdraw: () => requestWithdraw(),
     onPause: () => {
       paused = !paused;
       hud.setPaused(paused);
@@ -220,13 +233,13 @@ export function createMatchSession(options: MatchOptions): MatchSession {
   });
 
   function issue(command: MatchCommand): void {
-    if (disposed || paused) return;
+    if (disposed || paused || finished) return;
     simulation.update(0, command);
   }
 
   /** A launch, with the HUD told why when it does not happen. */
   function launch(kind: UnitKind): void {
-    if (disposed || paused) return;
+    if (disposed || paused || finished) return;
     syncSelection();
     const option = simulation.state.deployOptions.find((candidate) => candidate.kind === kind);
     const pad = simulation.bases.find((base) => base.id === selection.fromBaseId);
@@ -349,7 +362,7 @@ export function createMatchSession(options: MatchOptions): MatchSession {
         continue;
       }
       if (key === 'Escape') {
-        handlers.onExit();
+        requestWithdraw();
         continue;
       }
       if (lower === 'u') {
@@ -468,6 +481,10 @@ export function createMatchSession(options: MatchOptions): MatchSession {
     }
 
     syncSelection();
+    if (withdrawArmedAt !== 0 && performance.now() - withdrawArmedAt > WITHDRAW_CONFIRM_MS) {
+      withdrawArmedAt = 0;
+      hud.setWithdrawArmed(false);
+    }
     const state = simulation.state;
     handleEvents(simulation.takeEvents());
 
@@ -485,6 +502,34 @@ export function createMatchSession(options: MatchOptions): MatchSession {
       outcome = settle(state.status === 'victory' ? 'victory' : 'defeat', state.lossReason ?? 'time-expired');
       handlers.onFinish(outcome);
     }
+  }
+
+  /**
+   * Withdrawing is the only way out of a live battle, and it resolves the
+   * sector rather than abandoning it: `settle` records the loss and the shell
+   * shows the same splash a fought-out defeat gets. Two presses, so it cannot
+   * happen by accident.
+   */
+  function requestWithdraw(): void {
+    if (disposed || finished) return;
+    const now = performance.now();
+    if (now - withdrawArmedAt > WITHDRAW_CONFIRM_MS) {
+      withdrawArmedAt = now;
+      hud.setWithdrawArmed(true);
+      hud.say('press again to withdraw — the sector ends as a defeat');
+      play('uiClick');
+      return;
+    }
+    withdraw();
+  }
+
+  function withdraw(): void {
+    withdrawArmedAt = 0;
+    hud.setWithdrawArmed(false);
+    finished = true;
+    hud.say('withdrawn');
+    outcome = settle('defeat', 'withdrawn');
+    handlers.onFinish(outcome);
   }
 
   function reportFor(base: BaseState): BaseReport {
